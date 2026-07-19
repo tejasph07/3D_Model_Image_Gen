@@ -1,0 +1,10 @@
+# A seeker flying on a broom 2 m above the pitch, snitch in hand.
+create,seeker,HUMAN
+create,broom,BROOM
+hover,broom,2.0
+ride,seeker,broom
+create,snitch,BALL
+scale,snitch,0.4
+hold,seeker.left_hand,snitch
+look,seeker,forward
+camera,three_quarter,scene

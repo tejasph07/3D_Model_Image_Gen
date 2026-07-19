@@ -1,0 +1,6 @@
+# The original example: a human in front of a chair, palm on forehead.
+create,human_a,HUMAN
+create,chair_1,CHAIR
+infront,human_a,chair_1
+touch,human_a.right_palm,human_a.forehead
+camera,three_quarter,scene

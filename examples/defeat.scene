@@ -1,0 +1,10 @@
+# The villain sprawled in defeat; the hero stands over them, looking down.
+create,villain,HUMAN
+create,hero,HUMAN
+pose,villain,sprawl
+near,hero,villain
+look_at,hero,villain
+look,villain,up
+create,blade,SWORD
+hold,hero.right_hand,blade
+camera,three_quarter,scene

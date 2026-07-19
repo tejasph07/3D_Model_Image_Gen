@@ -1,0 +1,6 @@
+create,parent,HUMAN
+create,child,CHILD
+shoulder_sit,parent,child
+look,parent,forward
+look,child,forward
+camera,front,scene

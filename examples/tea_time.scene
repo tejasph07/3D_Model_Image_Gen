@@ -1,0 +1,15 @@
+# Ordinary life: seated at a table holding a cup, friend leaning on the table.
+create,host,HUMAN
+create,guest,HUMAN
+create,table_1,TABLE
+create,chair_1,CHAIR
+create,cup_1,CUP
+behind,chair_1,table_1
+turn,chair_1,180
+sit_on,host,chair_1
+hold,host.right_hand,cup_1
+infront,guest,table_1
+lean_on,guest,table_1
+look_at,guest,host
+look_at,host,guest
+camera,three_quarter,scene

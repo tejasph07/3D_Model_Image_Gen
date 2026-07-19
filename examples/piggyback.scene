@@ -1,0 +1,7 @@
+create,dad,HUMAN
+create,kid,HUMAN
+scale,kid,0.62
+piggyback,dad,kid
+look,dad,forward
+look,kid,forward
+camera,right,scene
