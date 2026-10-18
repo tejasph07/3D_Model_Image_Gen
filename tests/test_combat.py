@@ -44,9 +44,37 @@ def test_leg_lock_on_the_ground():
     a, v = pair("leg_lock", "leg_locked")
     assert a.joints["pelvis"][1] < 0.25 and v.joints["pelvis"][1] < 0.25  # both on the ground
     ankle = v.joints["r_ankle"]
-    assert np.linalg.norm(a.joints["r_wrist"] - ankle) < 0.2
-    assert ankle[1] > 0.35  # the trapped leg is held up
-    assert np.linalg.norm(a.joints["chest"] - ankle) < 0.45  # hugged to the chest
+    assert np.linalg.norm(a.joints["r_wrist"] - ankle) < 0.2  # forearm under the Achilles
+    assert ankle[1] > 0.2  # the trapped leg is held up off the floor
+    # ankle clamped under the right armpit: beside the ribs, not inside the chest
+    pit = a.joints["r_shoulder"]
+    assert np.linalg.norm(pit - ankle) < 0.2
+    assert np.linalg.norm(pit - ankle) > 0.03
+    # the captor leans back and its feet are on the victim's hips (the leg runs between its knees)
+    assert np.dot(a.joints["neck"] - a.joints["pelvis"], fwd(a)) < -0.05
+    hips = (v.joints["l_hip"] + v.joints["r_hip"]) / 2
+    assert min(np.linalg.norm(a.joints[f"{s}_ankle"] - hips) for s in "lr") < 0.35
+
+
+def test_free_arms_bend_and_stay_out_of_bodies():
+    """Arms not making a contact are never ramrod straight and never sink into a torso or head."""
+    for att, vic in [("punch", "staggered"), ("kick", "clutch_stomach"), ("palm_strike", "doubled_over"),
+                     ("back_knee_kick", "knee_buckle"), ("stance", "stumble"), ("stance", "block")]:
+        a, v = pair(att, vic)
+        for actor in (a, v):
+            J, b = actor.joints, actor.char.body
+            for s in "lr":
+                limb = actor.out.pose.hands.get(s)
+                if limb is not None and limb.frame != "chest":
+                    continue  # a deliberate contact (fist on a face, palm on a stomach, ...)
+                d = np.linalg.norm(J[f"{s}_wrist"] - J[f"{s}_shoulder"])
+                assert d < 0.94 * b.arm_reach, (actor.action, s)
+                for o in (a, v):
+                    seg = o.joints["neck"] - o.joints["pelvis"]
+                    p = J[f"{s}_wrist"]
+                    t = np.clip((p - o.joints["pelvis"]) @ seg / (seg @ seg), 0, 1)
+                    gap = np.linalg.norm(p - (o.joints["pelvis"] + seg * t)) - o.char.body.r["chest"]
+                    assert gap > -0.01, (actor.action, s, o.action)
 
 
 def test_back_knee_kick_comes_from_behind_and_hits_the_hollow_of_the_knee():

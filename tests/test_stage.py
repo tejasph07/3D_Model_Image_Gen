@@ -67,10 +67,15 @@ def test_punch_lands_on_the_face():
 def test_kick_reaches_the_head():
     s = duel("kick", weapon="fists")
     a, t = s.scene.actor("A"), s.scene.actor("T")
-    d = np.linalg.norm(a.joints["r_ankle"] - t.joints["head"])
-    assert d < 0.25, d
-    # support foot planted
-    assert a.joints["l_ankle"][1] - a.char.body.ankle_h == pytest.approx(0, abs=0.03)
+    # the instep (ankle -> toe) meets the head
+    d = _seg_dist(a.joints["r_ankle"], a.joints["r_toe"], t.joints["head"], t.joints["head"]) - t.char.body.head_r
+    assert d < 0.06, d
+    # support foot planted, unless the target is too tall to reach from the floor (jumping kick)
+    lift = a.joints["l_ankle"][1] - a.char.body.ankle_h
+    if a.out.airborne:
+        assert "jumping" in a.out.tags and 0.0 < lift < 0.45
+    else:
+        assert lift == pytest.approx(0, abs=0.03)
 
 
 def test_block_crosses_the_incoming_blade():
@@ -179,11 +184,12 @@ def test_strikes_land_across_many_random_body_pairs():
                  {"name": "A", "seed": sd + 100, "action": "kick", "target": "T"}]
         s = stage_scene({"characters": chars}, Cast(), size=(96, 96))
         a, t = s.scene.actor("A"), s.scene.actor("T")
-        kick.append(np.linalg.norm(a.joints["r_ankle"] - t.joints["head"]))
+        kick.append(_seg_dist(a.joints["r_ankle"], a.joints["r_toe"], t.joints["head"], t.joints["head"])
+                    - t.char.body.head_r)
         chars[1].update(action="punch", weapon="fists")
         s = stage_scene({"characters": chars}, Cast(), size=(96, 96))
         a, t = s.scene.actor("A"), s.scene.actor("T")
         fist = (a.joints["r_wrist"] + a.joints["r_hand"]) / 2
         punch.append(np.linalg.norm(fist - t.joints["head"]) - t.char.body.head_r)
     assert max(punch) < 0.06 and np.mean(punch) < 0.04
-    assert max(kick) < 0.3 and np.mean(kick) < 0.1
+    assert max(kick) < 0.12 and np.mean(kick) < 0.05

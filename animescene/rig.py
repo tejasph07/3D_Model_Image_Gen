@@ -94,6 +94,10 @@ class Limb:
     target: np.ndarray
     pole: np.ndarray  # direction the elbow / knee should point to (local)
     tip_dir: np.ndarray | None = None  # direction of hand/foot (local); None = follow limb
+    # "local": target/pole/tip are in the character frame. "chest" (arms only): target is an offset
+    # from the shoulder and pole/tip are directions, all in the chest frame, so the arm keeps its
+    # shape however the torso bends, twists or is re-grounded.
+    frame: str = "local"
 
 
 @dataclass
@@ -106,6 +110,7 @@ class PoseParams:
     hands: dict = field(default_factory=dict)  # "l"/"r" -> Limb
     feet: dict = field(default_factory=dict)
     grounded: bool = True
+    # hand shape per side: True/"fist", False/"relaxed", "flat" (palm strike), "grip" (holding), "claw"
     fist: dict = field(default_factory=lambda: {"l": True, "r": True})
 
 
@@ -178,6 +183,7 @@ class Rig:
         else:
             Rh = Rc @ euler(*p.head_rot)
         self.head_R = Rh
+        self.chest_R = Rc
         J["head"] = J["neck"] + Rh @ v(0, b.neck + b.head_r * 0.85, 0.01 * b.height)
         J["head_top"] = J["head"] + Rh @ v(0, b.head_r, 0)
         J["nose"] = J["head"] + Rh @ v(0, -0.15 * b.head_r, 0.98 * b.head_r)
@@ -191,14 +197,18 @@ class Rig:
             sh = J["neck"] + Rc @ v(sx * b.shoulder_w, -0.025 * b.height, -0.01 * b.height)
             J[f"{s}_shoulder"] = sh
             limb = p.hands.get(s)
-            if limb is None:  # relaxed arm hanging, slightly out
-                tgt = sh + Rc @ v(sx * 0.06 * b.height, -b.arm_reach * 0.97, 0.02 * b.height)
-                limb = Limb(tgt, Rc @ v(0, 0, -1))
+            if limb is None:  # relaxed arm hanging, elbow a little bent, hand slightly forward
+                limb = Limb(v(sx * 0.12, -0.87, 0.17) * b.arm_reach, v(sx * 0.15, 0, -1), frame="chest")
+            if limb.frame == "chest":
+                limb = Limb(sh + Rc @ np.asarray(limb.target, float),
+                            Rc @ np.asarray(limb.pole, float),
+                            None if limb.tip_dir is None else Rc @ np.asarray(limb.tip_dir, float))
             el, wr = two_bone_ik(sh, np.asarray(limb.target, float), b.upper_arm, b.forearm,
                                  np.asarray(limb.pole, float))
             J[f"{s}_elbow"], J[f"{s}_wrist"] = el, wr
             hd = unit(wr - el) if limb.tip_dir is None else unit(np.asarray(limb.tip_dir, float))
-            hl = b.hand * (0.55 if p.fist.get(s, True) else 1.0)
+            shape = p.fist.get(s, True)
+            hl = b.hand * {True: 0.55, "fist": 0.55, "grip": 0.6, "claw": 0.75, "relaxed": 0.85}.get(shape, 1.0)
             J[f"{s}_hand"] = wr + hd * hl
 
             hip = pel + Rp @ v(sx * b.hip_w, -0.035 * b.height, 0)
@@ -219,4 +229,11 @@ class Rig:
                 if p.grounded:
                     fd = unit(v(fd[0], min(fd[1], 0.0) * 0.2, fd[2]))
             J[f"{s}_toe"] = an + fd * b.foot
+            # which way the top of the foot faces: up the shin for a flat foot, the way the knee points
+            # for a pointed one (the renderer orients the foot with it; toe-along-shin is degenerate)
+            shin_up = unit(kn - an)
+            pl = np.asarray(foot.pole, float)
+            kf = pl - shin_up * (pl @ shin_up)
+            kf = unit(kf) if np.linalg.norm(kf) > 1e-6 else unit(Rp @ v(0, 0, 1))
+            J[f"{s}_foot_up"] = an + unit(shin_up + kf) * 0.05
         return J

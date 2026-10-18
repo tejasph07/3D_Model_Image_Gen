@@ -171,7 +171,8 @@ function pose(entry, J, opts) {
       if (isArm) {
         setWorldQuat(ne, deltaRotation(restDir(end), restH, td, h).multiply(rest[end].quat));
       } else {
-        const shinUp = j[jm].clone().sub(j[je]);
+        const fu = j[`${side}_foot_up`];
+        const shinUp = fu ? fu.clone().sub(j[je]) : j[jm].clone().sub(j[je]);
         setWorldQuat(ne, deltaRotation(new THREE.Vector3(0, 0, 1), new THREE.Vector3(0, 1, 0),
           td, shinUp).multiply(rest[end].quat));
       }
@@ -179,23 +180,54 @@ function pose(entry, J, opts) {
   };
   limb("l", "leftUpperLeg", "leftLowerLeg", "leftFoot", "l_hip", "l_knee", "l_ankle", "l_toe", false);
   limb("r", "rightUpperLeg", "rightLowerLeg", "rightFoot", "r_hip", "r_knee", "r_ankle", "r_toe", false);
+  // clavicles: the shoulder rises as the arm lifts and slides forward as it reaches (a raised arm
+  // on a fixed shoulder is what makes posed models look like mannequins)
+  const torsoUp = j.neck.clone().sub(j.pelvis).normalize();
+  const fwdN = fwdBody.clone().normalize();
+  for (const [side, bone] of [["l", "leftShoulder"], ["r", "rightShoulder"]]) {
+    const sn = N(bone);
+    if (!sn || !rest[bone]) continue;
+    const ud = j[`${side}_elbow`].clone().sub(j[`${side}_shoulder`]).normalize();
+    const elev = Math.asin(Math.max(-1, Math.min(1, ud.dot(torsoUp))));
+    const raise = Math.max(0, Math.min(0.4, (elev + 0.35) * 0.26));
+    const prot = Math.max(-0.12, Math.min(0.24, ud.dot(fwdN) * 0.22));
+    const lat = j[`${side}_shoulder`].clone().sub(j.neck);
+    lat.sub(torsoUp.clone().multiplyScalar(lat.dot(torsoUp))).normalize();
+    const qr = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3().crossVectors(lat, torsoUp).normalize(), raise);
+    const qp = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3().crossVectors(lat, fwdN).normalize(), prot);
+    setWorldQuat(sn, qr.multiply(qp).multiply(sn.getWorldQuaternion(new THREE.Quaternion())));
+  }
   limb("l", "leftUpperArm", "leftLowerArm", "leftHand", "l_shoulder", "l_elbow", "l_wrist", "l_hand", true);
   limb("r", "rightUpperArm", "rightLowerArm", "rightHand", "r_shoulder", "r_elbow", "r_wrist", "r_hand", true);
 
-  // fingers: fist or open hand
+  // fingers: hand shapes (fist | relaxed | flat | grip), curl per segment, outer fingers curl more
+  const SHAPES = {
+    fist: { f: [1.45, 1.45, 1.3], spread: 0, thumb: [0.6, 0.6, 0.6] },
+    relaxed: { f: [0.32, 0.5, 0.36], spread: 0.1, thumb: [0.2, 0.25, 0.25] },
+    flat: { f: [0.04, 0.06, 0.04], spread: 0.0, thumb: [0.12, 0.1, 0.05] },
+    grip: { f: [1.0, 1.1, 0.8], spread: 0, thumb: [0.5, 0.45, 0.4] },
+    claw: { f: [0.55, 1.0, 0.8], spread: 0.15, thumb: [0.35, 0.4, 0.4] },
+  };
   for (const side of ["left", "right"]) {
-    const fist = opts.fist ? opts.fist[side[0]] : true;
+    let shape = opts.fist ? opts.fist[side[0]] : true;
+    if (shape === true || shape === undefined) shape = "fist";
+    if (shape === false) shape = "relaxed";
+    const S = SHAPES[shape] || SHAPES.relaxed;
     const s = side === "left" ? -1 : 1;
-    for (const f of ["Index", "Middle", "Ring", "Little"]) {
-      for (const seg of ["Proximal", "Intermediate", "Distal"]) {
+    ["Index", "Middle", "Ring", "Little"].forEach((f, fi) => {
+      const extra = S === SHAPES.relaxed ? fi * 0.08 : 0;
+      ["Proximal", "Intermediate", "Distal"].forEach((seg, si) => {
         const n = N(`${side}${f}${seg}`);
-        if (n) { n.quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), s * (fist ? 1.45 : 0.12)); }
-      }
-    }
-    for (const seg of ["Metacarpal", "Proximal", "Distal"]) {
+        if (!n) return;
+        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), s * (S.f[si] + extra));
+        if (si === 0 && S.spread) q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), s * S.spread * (fi - 1.2) * 0.5));
+        n.quaternion.copy(q);
+      });
+    });
+    ["Metacarpal", "Proximal", "Distal"].forEach((seg, si) => {
       const n = N(`${side}Thumb${seg}`);
-      if (n) n.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -s * (fist ? 0.6 : 0.1));
-    }
+      if (n) n.quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), -s * S.thumb[si]);
+    });
   }
   // expression + gaze
   const em = vrm.expressionManager;
@@ -314,6 +346,16 @@ window.renderJob = async (job) => {
   renderer.setSize(job.width * ss, job.height * ss, false);
   renderer.render(scene, cam);
   const out = { beauty: renderer.domElement.toDataURL("image/png") };
+  // where the mesh's bones actually ended up (raw skeleton), for checking against the solver
+  out.bones = entries.map((e) => {
+    const r = {};
+    for (const b of ["hips", "head", "leftUpperArm", "leftLowerArm", "leftHand", "rightUpperArm", "rightLowerArm",
+      "rightHand", "leftUpperLeg", "leftLowerLeg", "leftFoot", "rightUpperLeg", "rightLowerLeg", "rightFoot"]) {
+      const n = e.vrm.humanoid.getRawBoneNode(b);
+      if (n) r[b] = n.getWorldPosition(new THREE.Vector3()).toArray();
+    }
+    return r;
+  });
   if (job.passes && job.passes.includes("depth")) {
     // depth of the real meshes, near = white, scaled to the actors' own depth range
     const box = new THREE.Box3(); entries.forEach((e) => box.expandByObject(e.scene));

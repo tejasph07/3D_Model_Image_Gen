@@ -18,7 +18,7 @@ ASPECTS = {"landscape": (1216, 832), "portrait": (832, 1216), "square": (1024, 1
            "wide": (1344, 768), "tall": (768, 1344)}
 
 ACTION_KEYS = {"action", "target", "at", "facing", "altitude", "bearing", "distance"}
-PARAM_KEYS = {"style", "phase", "aim", "leg", "lift", "effect"}
+PARAM_KEYS = {"style", "phase", "aim", "leg", "lift", "effect", "arms", "hands"}
 UPPER = ["head", "head_top", "nose", "neck", "chest", "spine", "pelvis", "l_shoulder", "r_shoulder",
          "l_elbow", "r_elbow", "l_wrist", "r_wrist", "l_hand", "r_hand"]
 

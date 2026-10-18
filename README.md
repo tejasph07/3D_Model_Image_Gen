@@ -49,6 +49,14 @@ scene JSON ──▶ 3D stage: rigs, IK, contacts, hit reactions, collisions, ca
   later panel re-projects them through the posed body, tests visibility
   against the depth buffer and composites the identical cut / bruise /
   bandage. The image model is never asked to draw injuries.
+* **Arms that look human.** Every arm that isn't landing a blow or holding
+  someone is placed from a library of natural shapes (guard, chin, chamber,
+  balance, counter-swing, flail, brace, cover, ...) defined in the chest frame
+  relative to the shoulder, in units of the model's own arm length, so the
+  elbow stays bent however the torso bends, twists or is re-grounded. The
+  renderer raises and protracts the clavicles as arms lift, and hands take a
+  shape (fist, relaxed, flat palm, grip, claw) instead of a flat T-pose hand.
+  A final pass pushes free hands out of any torso or head they sink into.
 * **Grappling and dirty fighting.** Headlocks, rear chokes, ankle locks,
   knee strikes in the clinch, back-of-the-knee kicks, spinning back kicks,
   palm strikes with an energy blast, every boxing punch — with reactions that
@@ -122,7 +130,8 @@ scenes/          single-scene examples
 stories/         multi-panel stories (alley fight, boxing title bout)
 showcase/        rendered results
 tests/           stage physics, prompts, regional-attention maths
-tools/           action_sheet.py (pose inspection), fetch_models.py
+tools/           pose_gallery.py (render actions/pairs with VRM models from several angles),
+                 pair_sheet3d.py, action_sheet.py (pose inspection), fetch_models.py
 ```
 
 ## Tests

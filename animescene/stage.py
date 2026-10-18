@@ -129,6 +129,8 @@ class Stage:
             ctx.target_body = t.char.body
             if t.action == "block" and t.target == a.name:
                 ctx.params = {**a.params, "_clash": True}
+            if t.target == a.name:  # reactions can shape themselves to what is being done to them
+                ctx.params = {**ctx.params, "_by": t.action}
             if a.action == "block" and t.action in ATTACKS:
                 ctx.params = {**a.params, "_incoming": True}
             if with_pose and t.joints is not None and a.origin is not None:
@@ -191,6 +193,8 @@ class Stage:
             delta = goal - t.joints[part]
             if t.action != "knocked_back" or t.out is None or not t.out.airborne:
                 delta[1] = 0.0
+            else:  # lifted by the blow, not launched into orbit
+                delta[1] = float(np.clip(delta[1], -0.05, 0.12))
             # a blow never drags its victim toward the attacker (beyond undoing its own recoil lean)
             flat = unit(v(motion[0], 0, motion[2]))
             back = delta @ flat
@@ -338,7 +342,8 @@ class Stage:
             out.pose.pelvis = base + shift
             if not out.pose.grounded or out.airborne:  # airborne: everything rides along
                 for limb in list(out.pose.hands.values()) + list(out.pose.feet.values()):
-                    limb.target = np.asarray(limb.target, float) + shift
+                    if limb.frame == "local":
+                        limb.target = np.asarray(limb.target, float) + shift
         a.local, a.out = local, out
         a.joints = {k: a.to_world(p) for k, p in local.items()}
         w = get_weapon(a.char.weapon)
@@ -371,7 +376,69 @@ class Stage:
                 self._align_victims()
             if not self._resolve_collisions():
                 break
+        self._free_arms()
         return SolvedScene(self.actors, self.spec)
+
+    # ------------------------------------------------------------------ arm clearance
+    @staticmethod
+    def _closest(p, a, b):
+        ab = b - a
+        t = float(np.clip((p - a) @ ab / max(ab @ ab, 1e-12), 0, 1))
+        return a + ab * t
+
+    def _free_arms(self, rounds: int = 4):
+        """Arms that aren't making a deliberate contact (chest-frame shapes) are pushed out of any
+        torso or head they sink into, their own included, and re-solved."""
+        for _ in range(rounds):
+            moved = False
+            for a in self.actors:
+                if a.out is None:
+                    continue
+                pose = a.out.pose
+                rig = Rig(a.char.body)
+                b = a.char.body
+                for s in "lr":
+                    limb = pose.hands.get(s)
+                    if limb is not None and limb.frame != "chest":
+                        continue
+                    J = a.joints
+                    pts = [J[f"{s}_wrist"], (J[f"{s}_wrist"] + J[f"{s}_hand"]) / 2,
+                           (J[f"{s}_elbow"] + J[f"{s}_wrist"]) / 2]
+                    push = v(0, 0, 0)
+                    for o in self.actors:
+                        if o.joints is None:
+                            continue
+                        R = o.char.body.r
+                        caps = [(o.joints["pelvis"], o.joints["neck"], R["chest"] * (0.85 if o is a else 1.0)),
+                                (o.joints["head"], o.joints["head"], o.char.body.head_r * 0.95)]
+                        if o is not a:
+                            caps += [(o.joints[f"{k}_hip"], o.joints[f"{k}_knee"], R["thigh"]) for k in "lr"]
+                        for p in pts:
+                            for c0, c1, rr in caps:
+                                q = self._closest(p, c0, c1)
+                                d = p - q
+                                pen = rr + b.r["forearm"] - np.linalg.norm(d)
+                                if pen > 0.005:
+                                    away = unit(d, fallback=tuple(a.F @ v(1 if s == "r" else -1, 0, 0)))
+                                    cand = away * (pen + 0.01)
+                                    if np.linalg.norm(cand) > np.linalg.norm(push):
+                                        push = cand
+                    if np.linalg.norm(push) < 1e-4:
+                        continue
+                    if limb is None:  # the default hanging arm, made explicit so it can move
+                        from .actions import _arm
+                        from .actions import ActionCtx as _C
+                        limb = _arm(_C(body=b, rig=rig, weapon=get_weapon("fists"), params={}), s, "hang")
+                        pose.hands[s] = limb
+                    rig.solve(pose)
+                    local_shift = a.F.T @ push
+                    limb.target = np.asarray(limb.target, float) + rig.chest_R.T @ local_shift
+                    moved = True
+                    local = rig.solve(pose)
+                    a.local = local
+                    a.joints = {k: a.to_world(p) for k, p in local.items()}
+            if not moved:
+                break
 
     # ------------------------------------------------------------------ collisions
     def _torso(self, a: Actor):

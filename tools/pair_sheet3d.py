@@ -17,8 +17,8 @@ tmp = Path(out).with_suffix("")
 tmp.mkdir(exist_ok=True)
 for i, (att, vic, ap, vp) in enumerate(PAIRS):
     for az in (20, 110):
-        v = {"name": "V", "model": V, "gender": "male", "action": vic, "target": "A", "at": [0.0, 0.0], "facing": 90, **vp}
-        a = {"name": "A", "model": A, "gender": "female", "action": att, "target": "V", **ap}
+        v = {"name": "V", "model": V, "gender": "male", "weapon": "fists", "action": vic, "target": "A", "at": [0.0, 0.0], "facing": 90, **vp}
+        a = {"name": "A", "model": A, "gender": "female", "weapon": "fists", "action": att, "target": "V", **ap}
         spec = {"setting": "day", "camera": {"shot": "full", "azimuth": az, "elevation": 8, "margin": 0.04},
                 "characters": [v, a]}
         st = stage_scene(spec, Cast(), size=(480, 360))

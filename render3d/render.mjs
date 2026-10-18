@@ -35,6 +35,7 @@ for (const job of jobs) {
   } else {
     const res = await page.evaluate((j) => window.renderJob(j), job);
     fs.writeFileSync(job.out, Buffer.from(res.beauty.split(",")[1], "base64"));
+    if (res.bones) fs.writeFileSync(job.out.replace(/\.png$/, "_bones.json"), JSON.stringify(res.bones));
     for (const k of ["depth", "ids"]) {
       if (res[k]) fs.writeFileSync(job.out.replace(/\.png$/, `_${k}.png`), Buffer.from(res[k].split(",")[1], "base64"));
     }
