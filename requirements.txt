@@ -1,3 +1,13 @@
-numpy>=1.24
-Pillow>=9.0
-pytest>=7.0
+numpy
+scipy
+pillow
+opencv-python-headless
+torch>=2.3
+diffusers>=0.33
+transformers
+safetensors
+accelerate
+peft
+pytest
+# optional: story -> scene directing with Claude
+anthropic

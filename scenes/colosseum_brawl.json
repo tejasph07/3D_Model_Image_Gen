@@ -1,0 +1,64 @@
+{
+  "title": "Colosseum brawl",
+  "story": "In the roaring arena Ryu buries an uppercut in the giant Bao's jaw, staggering him, while Hana's scythe whips horizontally at Ryu's exposed back and Yui fires a spell over the chaos.",
+  "setting": "ancient colosseum arena, sand floor, crowd in background, sunlight, dust clouds, broken pillars",
+  "lighting": "sunlight, god rays, dramatic shadows",
+  "camera": {
+    "shot": "low_angle",
+    "azimuth": 26,
+    "margin": 0.03
+  },
+  "seed": 21,
+  "characters": [
+    {
+      "name": "Bao",
+      "archetype": "berserker",
+      "gender": "male",
+      "build": "muscular",
+      "hair_color": "brown",
+      "palette": "amber",
+      "action": "staggered",
+      "target": "Ryu",
+      "at": [
+        1.3,
+        0.0
+      ]
+    },
+    {
+      "name": "Ryu",
+      "archetype": "brawler",
+      "gender": "male",
+      "hair_color": "black",
+      "palette": "navy",
+      "action": "punch",
+      "style": "uppercut",
+      "target": "Bao"
+    },
+    {
+      "name": "Hana",
+      "archetype": "reaper",
+      "gender": "female",
+      "hair_color": "purple",
+      "palette": "violet",
+      "action": "slash",
+      "style": "horizontal",
+      "target": "Ryu",
+      "at": [
+        -0.9,
+        -0.5
+      ]
+    },
+    {
+      "name": "Yui",
+      "description": "pink-haired petite mage girl",
+      "archetype": "mage",
+      "palette": "rose",
+      "action": "cast",
+      "target": "Hana",
+      "at": [
+        3.2,
+        -2.4
+      ]
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "title": "Rooftop ambush in the rain",
+  "story": "Kaze drops out of the storm onto Lena, twin daggers driving down; she catches both blades on her sword. Across the roof Shiro hurls a lightning spell at the assassin, not seeing Tetsu's spear lunging for his back.",
+  "setting": "rooftop of a skyscraper at night, heavy rain, neon city lights, wet floor, reflections, storm clouds, lightning",
+  "lighting": "neon lighting, rim light, backlighting, dramatic lighting",
+  "camera": {
+    "shot": "low_angle",
+    "azimuth": 24,
+    "margin": 0.03
+  },
+  "seed": 11,
+  "characters": [
+    {
+      "name": "Lena",
+      "description": "silver-haired knight girl in white armor",
+      "archetype": "knight",
+      "gender": "female",
+      "palette": "ivory",
+      "action": "block",
+      "target": "Kaze",
+      "at": [
+        -0.8,
+        0.0
+      ]
+    },
+    {
+      "name": "Kaze",
+      "archetype": "assassin",
+      "gender": "male",
+      "hair_color": "black",
+      "palette": "onyx",
+      "action": "slash",
+      "style": "overhead",
+      "target": "Lena"
+    },
+    {
+      "name": "Shiro",
+      "archetype": "mage",
+      "gender": "male",
+      "hair_color": "white",
+      "eyes": "aqua",
+      "palette": "azure",
+      "action": "cast",
+      "style": "two_hands",
+      "target": "Kaze",
+      "at": [
+        1.2,
+        -0.6
+      ]
+    },
+    {
+      "name": "Tetsu",
+      "archetype": "lancer",
+      "gender": "male",
+      "hair_color": "red",
+      "palette": "crimson",
+      "action": "thrust",
+      "target": "Shiro",
+      "bearing": 60
+    }
+  ]
+}
