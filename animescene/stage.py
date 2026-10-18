@@ -17,11 +17,11 @@ from .vec import frame_from, unit, v
 from .weapons import get_weapon
 
 REACTIONS = {"knocked_back", "staggered", "dodge", "fallen", "kneel", "headlocked", "choked", "leg_locked",
-             "knee_buckle", "doubled_over", "clutch_stomach", "stumble"}
+             "knee_buckle", "doubled_over", "clutch_stomach", "stumble", "flinch", "ear_pulled"}
 # reactions whose body is moved so the attacker's blow actually lands on it
 HIT_REACTIONS = {"knocked_back", "staggered", "knee_buckle", "doubled_over", "stumble"}
 # attackers that hold on to the victim's actual (reacting) body rather than its pre-hit stance
-HOLDS = {"headlock", "rear_choke", "leg_lock", "knee_strike", "palm_strike"}
+HOLDS = {"headlock", "rear_choke", "leg_lock", "knee_strike", "palm_strike", "press_stomach", "ear_pull"}
 ATTACKS = {"slash", "thrust", "leap_attack", "punch", "kick", "flying_kick", "charge", "palm_strike",
            "spinning_back_kick", "back_knee_kick", "knee_strike", "headlock", "rear_choke", "leg_lock"}
 
@@ -189,7 +189,11 @@ class Stage:
                        key=lambda k: np.linalg.norm(proxy[k] - impact))
             motion = att.F @ att.out.motion
             # a moment after contact: the struck part has already travelled with the blow
-            goal = impact + unit(motion) * (0.28 if t.action == "knocked_back" else 0.08)
+            # a pressed contact (palm, fist sunk into the gut) keeps the surface on the effector
+            r_part = {"head": t.char.body.head_r, "neck": t.char.body.r["neck"], "chest": t.char.body.r["chest"],
+                      "spine": t.char.body.r["waist"], "pelvis": t.char.body.r["pelvis"]}[part]
+            held = bool(att.out.press)
+            goal = impact + unit(motion) * (0.28 if t.action == "knocked_back" else (r_part if held else 0.08))
             delta = goal - t.joints[part]
             if t.action != "knocked_back" or t.out is None or not t.out.airborne:
                 delta[1] = 0.0
@@ -203,8 +207,10 @@ class Stage:
             # keep flying along the blow until the bodies no longer pass through each other
             step = unit(v(motion[0], 0, motion[2])) * 0.05
             tol = -0.06 if t.action == "doubled_over" else 0.0  # a folded body may lean onto its attacker
+            hr = t.char.body.head_r + att.char.body.head_r
             for _ in range(30):
-                if self._body_clearance(t, att, delta) > tol:
+                heads = np.linalg.norm(t.joints["head"] + delta - att.joints["head"]) - hr
+                if self._body_clearance(t, att, delta) > tol and heads > 0.0:
                     break
                 delta = delta + step
             t.origin = t.origin + delta
@@ -293,6 +299,9 @@ class Stage:
                 continue
             if isinstance(a.facing, (int, float)):
                 a.yaw = np.deg2rad(a.facing)
+            elif a.facing == "away":  # back turned to whoever is acting on it (or its target)
+                src = self.by.get(a.target) or next((p for p in self.actors if p.target == a.name), None)
+                a.yaw = _yaw_to(a.origin, src.origin) + np.pi if src is not None else 0.0
             elif isinstance(a.facing, str):
                 a.yaw = _yaw_to(a.origin, self.by[a.facing].origin)
             elif a.target:

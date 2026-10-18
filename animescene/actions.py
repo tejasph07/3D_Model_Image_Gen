@@ -73,6 +73,9 @@ class ActionCtx:
                  "stomach": "spine", "gut": "spine", "legs": "l_knee", "neck": "neck"}
         if a not in names:
             raise ValueError(f"unknown aim {a!r}; choose from {sorted(names)}")
+        if a in ("stomach", "gut", "body"):  # the soft belly, between the navel and the bottom of the ribs
+            # (the rig's "spine" joint sits at the lower ribs, "chest" at the bust, "pelvis" at the hips)
+            return self.tj("spine") * 0.7 + self.tj("pelvis") * 0.3
         if names[a] == "head":  # blows to the head land on the face/jaw, not the crown
             hr = self.target_body.head_r if self.target_body else 0.11
             return self.tj("head") * 0.5 + self.tj("nose") * 0.5 - v(0, 0.3 * hr, 0)
@@ -98,6 +101,10 @@ class ActionOut:
     turn: float | None = None  # world yaw the action needs (e.g. back to the target), origin kept
     # booru tags for a glowing effect painted around the impact point (regional prompt)
     effect: str = ""
+    # soft-body presses on the target's mesh: {"point": effector surface (local), "dir": into the body
+    # (local), "radius": m, "max_depth": m}; the renderer measures the real skin under the point and
+    # dents it exactly as far as the effector went in. "depth" < 0 pulls the surface instead (pinch).
+    press: list = field(default_factory=list)
 
 
 ACTIONS: dict[str, Callable[[ActionCtx], ActionOut]] = {}
@@ -313,13 +320,15 @@ def punch(c: ActionCtx) -> ActionOut:
         raise ValueError(f"unknown punch style {style!r}")
     hand = "l" if style == "jab" else "r"
     other = "r" if hand == "l" else "l"
-    low = style == "body"
-    pel = _pel(c, 0, -0.12 if low else -0.07, 0.06)
+    low = style == "body" or c.p("aim") in ("stomach", "body", "gut")
+    # body shots drop the level and slip the head to the outside of the target's (folding) body
+    pel = _pel(c, 0, -0.16 if low else -0.07, 0.06)
     twist = {"straight": -22, "jab": 12, "hook": -34, "uppercut": -18, "body": -24}[style]
-    pose = PoseParams(pelvis=pel, pelvis_rot=(twist, 14 if low else 8, 0),
-                      chest_rot=(twist * 0.7, 14 if low else 10, 0), look_at=c.tj("head"))
+    sl = (-1 if hand == "r" else 1)  # lean away from the punching side
+    pose = PoseParams(pelvis=pel, pelvis_rot=(twist, 14 if low else 8, 10 * sl if low else 0),
+                      chest_rot=(twist * 0.7, 14 if low else 10, 12 * sl if low else 0), look_at=c.tj("head"))
     pose.feet = _feet(c, (-0.08, 0.2), (0.13, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
-    aim = c.aim("stomach" if low else "head")
+    aim = c.aim("stomach" if style == "body" else ("head" if not low else c.p("aim")))
     tb = c.target_body
     # the head aim is already the jaw, a third of a head radius under the skin
     surf = {"head": (tb.head_r if tb else 0.11) * 0.35, "face": (tb.head_r if tb else 0.11) * 0.35}.get(
@@ -341,6 +350,18 @@ def punch(c: ActionCtx) -> ActionOut:
         J = _solve(c, pose)
     chest = J["chest"]
     toward = unit(aim - chest)
+    body_shot = low or c.p("aim") in ("stomach", "body", "gut", "chest")
+    if body_shot and style in ("straight", "jab", "body"):
+        # knuckles sunk into the skin along the torso's own normal (a folding body's belly faces down)
+        skin, n_in = _surface(c, aim, "chest" if c.p("aim") == "chest" else "stomach")
+        knuckle = skin + n_in * 0.025
+        travel = unit(knuckle - J[f"{hand}_shoulder"])
+        fist = knuckle - travel * 0.5 * c.body.hand
+        pose.hands[hand] = Limb(fist, v((-1 if hand == "l" else 1) * 0.6, -1, 0))
+        pose.hands[other] = _arm(c, other, "chin")
+        tags = ["punching", "motion lines", "impact", "body blow", "stomach punch"]
+        return ActionOut(pose, tags=tags + _base_tags(c), motion=travel, impact=skin, reach=(f"{hand}_wrist", fist),
+                         press=[{"point": knuckle, "dir": n_in, "radius": 0.06, "max_depth": 0.05}])
     if style == "hook":  # the fist arrives from the outside, travelling across; elbow up at ~90 degrees
         across = unit(v(-1, 0, 0.35))
         fist = aim - across * (surf + 0.3 * c.body.hand) * 0.6 - toward * (surf + 0.3 * c.body.hand) * 0.8
@@ -970,60 +991,94 @@ def choked(c: ActionCtx) -> ActionOut:
 
 
 @action("leg_lock", needs_pose=True,
-        doc="Straight ankle lock on the ground: sitting at the target's feet (target uses `leg_locked`), the "
-            "trapped leg between the legs, ankle clamped in the right armpit, feet on the hips, leaning back.")
+        doc="Straight ankle lock from ashi garami: sitting at the target's feet (target uses `leg_locked`), "
+            "the trapped leg across the lap between the thighs, knees pinched on it, outside foot pushing the "
+            "hip, inside foot hooked under the far glute, ankle in the right armpit, leaning back.")
 def leg_lock(c: ActionCtx) -> ActionOut:
     H = c.H
     if c.target_world is None:
         return stance(c)
     side = c.p("leg", "r")
-    ankle, tpel = c.tw(f"{side}_ankle"), c.tw("pelvis")
-    d = unit(v(ankle[0] - tpel[0], 0, ankle[2] - tpel[2]))  # along the trapped leg, toward its foot
-    yaw = _yaw(-d)
-    f, r = _fwd_right(yaw)
+    other = "l" if side == "r" else "r"
+    ankle, hip_t, hip_o = c.tw(f"{side}_ankle"), c.tw(f"{side}_hip"), c.tw(f"{other}_hip")
+    tb, b = c.target_body, c.body
     up = v(0, 1, 0)
-    pr = c.body.r["pelvis"]
+    d = unit(v(ankle[0] - hip_t[0], 0, ankle[2] - hip_t[2]))  # along the trapped leg, toward its foot
+    pr = b.r["pelvis"]
     pose = PoseParams(pelvis=v(0, pr * 1.05, 0), pelvis_rot=(0, -30, 0), chest_rot=(0, 2, 0))
     # the shin runs under the right armpit, along the ribs: outside the chest, under the upper arm
-    tb = c.target_body
-    b = c.body
     pit_off = v(max(0.0, b.r["chest"] + tb.r["shin"] - b.shoulder_w), -(b.r["upper_arm"] + tb.r["shin"] + 0.01 * H), 0)
-    # lean back until the armpit is at the height of the trapped ankle
     best = None
-    for lean in np.arange(-5, -66, -2.5):
+    for lean in np.arange(-5, -66, -2.5):  # lean back until the armpit is at the height of the ankle
         pose.pelvis_rot = (0, float(lean), 0)
         J = _solve(c, pose)
         pit = J["r_shoulder"] + c.rig.chest_R @ pit_off
-        err = abs(pit[1] - ankle[1])
-        if best is None or err < best[0]:
-            best = (err, float(lean), pit)
-    _, lean, pit = best
-    pose.pelvis_rot = (0, lean, 0)
-    pose.chest_rot = (0, max(0.0, -lean - 40) * 0.5, 0)
+        if best is None or abs(pit[1] - ankle[1]) < best[0]:
+            best = (abs(pit[1] - ankle[1]), float(lean))
+    pose.pelvis_rot = (0, best[1], 0)
+    pose.chest_rot = (0, max(0.0, -best[1] - 40) * 0.5, 0)
     J = _solve(c, pose)
     pit = J["r_shoulder"] + c.rig.chest_R @ pit_off
-    origin = ankle - r * pit[0] - f * pit[2]
-    origin = v(origin[0], 0, origin[2])
+
+    def place(yaw):
+        f, r = _fwd_right(yaw)
+        o = ankle - r * pit[0] - f * pit[2]
+        return v(o[0], 0, o[2])
+
+    # angle the body so the leg runs from the armpit diagonally across the lap, crossing the pelvis just
+    # right of centre (between the thighs) - solved by Newton on the yaw, pivoting about the ankle
+    xc = 0.025 * H
+    yaw = _yaw(-d)
+
+    def err(yw):
+        hl = _mount_local(c, place(yw), yw, hip_t)
+        t = (0 - pit[2]) / max(hl[2] - pit[2], 1e-3)  # where the leg line crosses the pelvis plane
+        return pit[0] + (hl[0] - pit[0]) * t - xc
+    for _ in range(8):
+        e = err(yaw)
+        if abs(e) < 0.003:
+            break
+        de = (err(yaw + 0.01) - e) / 0.01
+        if abs(de) < 1e-4:
+            break
+        yaw -= float(np.clip(e / de, -0.3, 0.3))
+    origin = place(yaw)
+    f, r = _fwd_right(yaw)
     L = lambda p: _mount_local(c, origin, yaw, p)  # noqa: E731
-    # feet on the victim's hips, the trapped leg between the knees
-    hips = sorted([c.tw("l_hip"), c.tw("r_hip")], key=lambda p: L(p)[0])
-    lift = up * (tb.r["pelvis"] * 0.9)
-    pose.feet["r"] = Limb(L(hips[1] + lift + r * 0.04 * H), v(0.6, 1, 0), _mount_dir(yaw, unit(-f + up * 0.6)))
-    pose.feet["l"] = Limb(L(hips[0] + lift - r * 0.02 * H), v(-0.6, 1, 0), _mount_dir(yaw, unit(-f + up * 0.6)))
+    D = lambda w: _mount_dir(yaw, w)  # noqa: E731
+
+    # legs: the outside foot's sole on the trapped hip, the inside foot hooked under the far side of the
+    # buttocks between the target's legs; knees up and squeezed together on the trapped thigh
+    o = unit(v(hip_t[0] - hip_o[0], 0, hip_t[2] - hip_o[2]))  # outward from the trapped hip
+    outside = "r" if D(o)[0] > 0 else "l"
+    inside = "l" if outside == "r" else "r"
+    foot_out = hip_t + o * 0.6 * tb.hip_w + up * (tb.r["pelvis"] * 0.8) + d * 0.02 * H
+    foot_in = hip_t - o * 1.4 * tb.hip_w + d * 0.06 * H
+    foot_in = v(foot_in[0], b.ankle_h + 0.01 * H, foot_in[2])
+    # each knee rides up on its own side of the trapped leg (the thighs clamp it, they don't overlap it)
+    al, hl = L(ankle), L(hip_t)
+
+    def line_x(z):  # the trapped leg's x (attacker frame) where it passes depth z
+        return al[0] + (hl[0] - al[0]) * (z - al[2]) / max(hl[2] - al[2], 1e-3)
+    for s_, foot, tip in ((outside, foot_out, D(unit(-d + up * 0.5))), (inside, foot_in, D(unit(-d * 0.6 + o * 0.6)))):
+        fl = L(foot)
+        sgn = 1.0 if fl[0] > line_x(fl[2]) else -1.0
+        pose.feet[s_] = Limb(fl, v(sgn * 0.3, 1, 0.1), tip)
     pose.grounded = True
-    # right forearm blade under the Achilles, wrist across in front of the chest; left hand over the shin
+    # arms: right forearm blade under the Achilles, wrist hugged to the chest; left hand clasps it (gable grip)
     shin_r = tb.r["shin"]
-    wrist = ankle - up * (shin_r + b.r["forearm"]) - r * 0.07 * H + d * 0.01 * H
+    wrist = ankle - up * (shin_r + b.r["forearm"]) - r * 0.08 * H + d * 0.01 * H
     wrist[1] = max(wrist[1], b.r["forearm"] + 0.005)  # never through the floor
     J = _solve(c, pose)
-    elbow = J["r_shoulder"] + c.rig.chest_R @ v(0.05 * H, -0.15 * H, -0.01 * H)  # outside and below the shin
-    pose.hands["r"] = Limb(L(wrist), _pole_to(J, "r", elbow, L(wrist)), _mount_dir(yaw, unit(-r + up * 0.2)))
-    grip = ankle - d * 0.07 * H + up * (shin_r + 0.015 * H) - r * 0.01 * H
-    pose.hands["l"] = Limb(L(grip), v(-1, -0.6, -0.3), _mount_dir(yaw, unit(r * 0.6 - up * 0.4)))
+    elbow = J["r_shoulder"] + c.rig.chest_R @ v(0.05 * H, -0.15 * H, -0.01 * H)  # tight to the ribs, under the shin
+    pose.hands["r"] = Limb(L(wrist), _pole_to(J, "r", elbow, L(wrist)), D(unit(-r + up * 0.2)), palm=D(unit(up - r * 0.3)))
+    clasp = wrist - r * 0.035 * H + up * 0.025 * H - d * 0.01 * H
+    pose.hands["l"] = Limb(L(clasp), v(-1, -0.6, -0.3), D(unit(r * 0.8 - up * 0.2)), palm=D(unit(-up + r * 0.2)))
     pose.fist = {"l": "grip", "r": "grip"}
     pose.look_at = L(c.tw("head"))
     return ActionOut(pose, tags=["leg lock", "ankle lock", "grappling", "sitting", "on ground", "leaning back",
-                                 "clenched teeth"], impact=L(ankle), mount=(origin, yaw))
+                                 "clenched teeth"], impact=L(ankle), mount=(origin, yaw),
+                     press=[{"point": L(ankle - up * shin_r * 0.6), "dir": up, "radius": 0.03, "max_depth": 0.015}])
 
 
 @action("leg_locked", doc="Flat on the back with one leg trapped in the target's ankle lock, tapping the floor.")
@@ -1043,7 +1098,8 @@ def leg_locked(c: ActionCtx) -> ActionOut:
     dz = float(np.sqrt(max(leg * leg - dy * dy, 0.04)))
     pose.feet[side] = Limb(v(sx * 0.06 * H, ah_t, hip[2] + dz), v(0, 1, 0), v(0, 0.75, 0.6))
     other = "l" if side == "r" else "r"
-    pose.feet[other] = Limb(v(-sx * 0.2 * H, c.body.ankle_h, 0.3 * H), v(-sx * 0.8, 1, 0.2))
+    # the free leg splayed out of the way of the captor's inside leg, knee bent outward
+    pose.feet[other] = Limb(v(-sx * 0.27 * H, c.body.ankle_h, 0.3 * H), v(-sx * 1.0, 0.7, 0.2))
     # chest frame lying down is (out, toward the head, up): one hand slaps the floor, one grabs at the thigh
     pose.hands[other] = Limb(v(-sx * 0.55, -0.3, -0.12) * c.body.arm_reach, v(-sx, 0.3, 0.2), v(-sx * 0.6, -0.8, 0),
                              frame="chest")
@@ -1144,20 +1200,26 @@ def _palm_distance(c: ActionCtx) -> float:
         doc="Open palm driven into the target (default the stomach); style: energy (with an energy blast) | plain.")
 def palm_strike(c: ActionCtx) -> ActionOut:
     H = c.H
-    pel = _pel(c, 0, -0.1, 0.07)
-    pose = PoseParams(pelvis=pel, pelvis_rot=(-24, 12, 0), chest_rot=(-14, 8, 0), look_at=c.tj("head"))
-    pose.feet = _feet(c, (-0.09, 0.22), (0.13, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
+    pel = _pel(c, 0, -0.15, 0.07)  # low stance, head slipped outside the target's folding body
+    pose = PoseParams(pelvis=pel, pelvis_rot=(-24, 12, -10), chest_rot=(-14, 8, -12), look_at=c.tj("head"))
+    pose.feet = _feet(c, (-0.11, 0.22), (0.14, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
     aim = c.aim("stomach")
-    r_t = c.target_body.r["waist"] if c.target_body else 0.09
-    toward = unit(v(aim[0], 0, aim[2]) - v(0, 0, 0))
-    wrist = aim - toward * (r_t + 0.012 * H) - v(0, 0.035 * H, 0)  # heel of the palm sinking into the surface
-    pose.hands["r"] = Limb(wrist, v(0.6, -1, 0), toward * 0.3 + v(0, 1, 0))
+    part = "chest" if c.p("aim") == "chest" else "stomach"
+    surface, toward = _surface(c, aim, part)  # the skin under the palm and the push direction into it
+    sink = 0.03  # how far the palm drives into the soft belly (the renderer dents the mesh to match)
+    up = v(0, 1, 0)
+    tip = unit(up - toward * (toward @ up) + toward * 0.2)  # fingers up along the body, heel leading
+    hand = c.body.hand
+    palm_c = surface + toward * sink  # centre of the palm, pressed in
+    wrist = palm_c - tip * 0.38 * hand - toward * 0.012
+    pose.hands["r"] = Limb(wrist, v(0.6, -1, 0), tip, palm=toward)
     pose.hands["l"] = _arm(c, "l", "chamber")  # the other hand pulled back to the hip (hikite)
     pose.fist = {"l": True, "r": "flat"}
     energy = c.p("style", "energy") == "energy"
     out = ActionOut(pose, tags=["palm strike", "open hand", "outstretched arm", "shouting"]
                     + (["glowing hand", "energy"] if energy else []),
-                    motion=toward, impact=aim - toward * r_t, reach=("r_wrist", wrist))
+                    motion=toward, impact=surface, reach=("r_wrist", wrist),
+                    press=[{"point": palm_c, "dir": toward, "radius": 0.085, "max_depth": 0.07}])
     if energy:
         out.effect = c.p("effect", "energy blast, shockwave, glowing, light particles, blue energy, lens flare")
     return out
@@ -1168,7 +1230,12 @@ def doubled_over(c: ActionCtx) -> ActionOut:
     H = c.H
     lift = c.p("lift", 0.03) * H
     pel = _pel(c, 0, -0.03, -0.04) + v(0, lift, 0)
-    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 30, 0), chest_rot=(0, 30, 0), head_rot=(0, -18, 0),
+    # phase "impact": the fist/palm is still buried in the gut, the body only starting to curl around it
+    # (the classic impact frame); "after": folded right over
+    held = c.p("_by") in ("palm_strike", "punch", "press_stomach")
+    phase = c.p("phase", "impact" if held else "after")
+    fold = (24, 22, -16) if phase == "impact" else (30, 30, -18)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, fold[0], 0), chest_rot=(0, fold[1], 0), head_rot=(0, fold[2], 0),
                       grounded=lift <= 0)
     ah = c.body.ankle_h
     pose.feet["l"] = Limb(v(-0.08 * H, ah + lift * 0.6, -0.14 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
@@ -1190,12 +1257,30 @@ def doubled_over(c: ActionCtx) -> ActionOut:
                 pose.pelvis_rot = (y_, min(55.0, p_ + 6), r_)
             else:
                 pose.pelvis = pose.pelvis - v(0, min(dy, 0.1 * H), 0)
-    # the arms fold in around the blow: one hand to the gut, the other thrown loosely forward
+    # the arms fold in around the blow. If the striking arm is still there (a fist or palm sunk into
+    # the gut), one hand clutches at that forearm; the other goes to the belly beside the blow
     J = _solve(c, pose)
-    belly = J["spine"] + c.rig.chest_R @ v(0.02 * H, -0.03 * H, c.body.r["waist"] + 0.025 * H)
-    pose.hands["l"] = _own(c, pose, "l", belly, v(-1, -0.3, -0.3), c.rig.chest_R @ v(1, -0.3, 0.2))
-    pose.hands["r"] = _arm(c, "r", "hang", dx=0.05, dy=0.05, dz=0.3)  # dangling loose toward the ground
-    pose.fist = {"l": "claw", "r": "relaxed"}
+    Rc = c.rig.chest_R
+    belly = J["spine"] * 0.6 + J["chest"] * 0.4 + Rc @ v(0, 0, c.body.r["waist"] + 0.02 * H)
+    by = c.p("_by")
+    if c.target is not None and by in ("palm_strike", "punch", "press_stomach"):
+        side = "r" if by == "palm_strike" else "r"
+        wr, el = c.tj(f"{side}_wrist"), c.tj(f"{side}_elbow")
+        fa = unit(el - wr)
+        out_l = unit(np.cross(fa, v(0, 1, 0)))  # beside the forearm, on the victim's left
+        if out_l[0] > 0:
+            out_l = -out_l
+        # wrapping the attacker's wrist from the side, palm on it
+        grab = wr + fa * 0.09 * H + out_l * (c.body.r["forearm"] + 0.01 * H) + v(0, 0.012 * H, 0)
+        pose.hands["l"] = Limb(_reach(J, "l", grab, c.body.arm_reach * 0.97), v(-1, -0.3, -0.4),
+                               unit(-fa * 0.3 + v(0, -0.2, 0) - out_l), palm=-out_l)
+        pose.hands["r"] = _own(c, pose, "r", belly + Rc @ v(0.1 * H, -0.02 * H, 0), Rc @ v(1, -0.3, -0.4),
+                               Rc @ v(-0.3, -1, 0.2))
+        pose.fist = {"l": "grip", "r": "claw"}
+    else:
+        pose.hands["l"] = _own(c, pose, "l", belly, v(-1, -0.3, -0.3), Rc @ v(1, -0.3, 0.2))
+        pose.hands["r"] = _arm(c, "r", "hang", dx=0.05, dy=0.05, dz=0.3)  # dangling loose toward the ground
+        pose.fist = {"l": "claw", "r": "relaxed"}
     return ActionOut(pose, airborne=lift > 0 and not pose.grounded, motion=v(0, 0.15, -1),
                      tags=["doubled over", "stomach punch", "pain", "open mouth", "saliva", "wide-eyed",
                            "constricted pupils", "motion lines"])
@@ -1246,33 +1331,54 @@ def knee_strike(c: ActionCtx) -> ActionOut:
     front = unit(c.t_fwd - axis * (c.t_fwd @ axis))  # the belly faces down when the target is folded
     K = spine + front * (c.target_body.r["waist"] + 0.03)  # front of the target's stomach
     hip_h = c.body.hip_h - 0.035 * H
-    dy = K[1] - hip_h
-    horiz = float(np.sqrt(max(c.body.thigh ** 2 - dy ** 2, (0.06 * H) ** 2)))
-    origin = K - f * horiz - r * c.body.hip_w
-    origin = v(origin[0], 0, origin[2])
-    hip = origin + v(0, hip_h, 0) + r * c.body.hip_w
-    knee = hip + unit(K - hip) * c.body.thigh
-    foot = knee + unit(v(0, -1, 0) - f * 0.7) * c.body.shin
-    pose = PoseParams(pelvis=_pel(c, 0, 0, 0), pelvis_rot=(0, -10, 0), chest_rot=(0, 2, 0),
-                      look_at=_mount_local(c, origin, yaw, head))
-    pose.feet["l"] = Limb(v(-0.07 * H, c.body.ankle_h, -0.05 * H), v(0, 0.2, 1))
-    pose.feet["r"] = _limb_world(c, origin, yaw, "r", foot, (0, 0.8, 1))
-    # lean back from the waist until the heads clear (the victim's head is pulled in under the chin)
-    hv = _mount_local(c, origin, yaw, head)
-    clear = c.target_body.head_r + c.body.head_r * 0.9
-    for lean in range(8, -34, -3):
-        pose.pelvis_rot = (0, float(lean), 0)
-        J = _solve(c, pose)
-        if np.linalg.norm(J["head"] - hv) > clear:
+    hv_r = c.target_body.head_r
+    best = None
+    # the folded head comes in under the chin: lean back from the waist and, if needed, give ground,
+    # until it clears the chest and face (the knee still rises into the stomach)
+    for back in np.arange(0.0, 0.16, 0.02):
+        dy = K[1] - hip_h
+        horiz = float(np.sqrt(max(c.body.thigh ** 2 - dy ** 2, (0.06 * H) ** 2))) + back
+        origin = K - f * horiz - r * c.body.hip_w
+        origin = v(origin[0], 0, origin[2])
+        hip = origin + v(0, hip_h, 0) + r * c.body.hip_w
+        knee = hip + unit(K - hip) * c.body.thigh
+        foot = knee + unit(v(0, -1, 0) - f * 0.7) * c.body.shin
+        L = lambda p, o=origin: _mount_local(c, o, yaw, p)  # noqa: E731
+        hv = L(head)
+        for lean in range(6, -31, -4):
+            pose = PoseParams(pelvis=_pel(c, 0, 0, 0), pelvis_rot=(0, float(lean), 0), chest_rot=(0, 2, 0),
+                              look_at=hv)
+            pose.feet["l"] = Limb(v(-0.07 * H, c.body.ankle_h, -0.05 * H), v(0, 0.2, 1))
+            pose.feet["r"] = _limb_world(c, origin, yaw, "r", foot, (0, 0.8, 1))
+            J = _solve(c, pose)
+            seg = J["neck"] - J["pelvis"]
+            t = float(np.clip((hv - J["pelvis"]) @ seg / (seg @ seg), 0, 1))
+            gap = min(np.linalg.norm(hv - (J["pelvis"] + seg * t)) - c.body.r["chest"] - hv_r,
+                      np.linalg.norm(hv - J["head"]) - c.body.head_r - hv_r)
+            if best is None or gap > best[0]:
+                best = (gap, origin, pose)
+            if gap > 0.005:
+                break
+        if best[0] > 0.005:
             break
+    _, origin, pose = best
     # Thai clinch: both hands cupped over the back of the head, forearms on the collarbones
+    # palms cupped on the back of the head, fingers reaching down over it toward the nape
     face = unit(c.tw("nose") - head)
-    back = head - face * c.target_body.head_r * 0.9
-    pose.hands["r"] = _limb_world(c, origin, yaw, "r", back + r * 0.045, (1, -0.4, 0), _mount_dir(yaw, -face))
-    pose.hands["l"] = _limb_world(c, origin, yaw, "l", back - r * 0.045, (-1, -0.4, 0), _mount_dir(yaw, -face))
-    pose.fist = {"l": "claw", "r": "claw"}
+    back = head - face * (c.target_body.head_r + 0.012)
+    nape = unit(c.tw("neck") - head)
+    nape = unit(nape - face * (nape @ face))
+    for s, sx in (("r", 1.0), ("l", -1.0)):
+        palm_c = back + r * sx * 0.04 * H
+        wrist = palm_c - nape * 0.42 * c.body.hand
+        pose.hands[s] = _limb_world(c, origin, yaw, s, wrist, (sx, -0.4, 0), _mount_dir(yaw, nape))
+        pose.hands[s].palm = _mount_dir(yaw, face)
+    pose.fist = {"l": "relaxed", "r": "relaxed"}
+    Kl = _mount_local(c, origin, yaw, K)
     return ActionOut(pose, tags=["knee strike", "kneeing", "clinch", "grabbing another's head", "angry", "impact"],
-                     motion=v(0, 0.6, 0.8), impact=_mount_local(c, origin, yaw, K), mount=(origin, yaw))
+                     motion=v(0, 0.6, 0.8), impact=Kl, mount=(origin, yaw),
+                     press=[{"point": Kl + _mount_dir(yaw, -front) * 0.03, "dir": _mount_dir(yaw, -front),
+                             "radius": 0.07, "max_depth": 0.05}])
 
 
 def _reach(J: dict, side: str, point: np.ndarray, reach: float) -> np.ndarray:
@@ -1294,3 +1400,162 @@ def _throat(c: ActionCtx) -> tuple:
     face = unit(c.tw("nose") - c.tw("head"))
     neck = c.tw("neck") * 0.7 + c.tw("head") * 0.3
     return neck + face * (c.target_body.r["neck"] + 0.012 * c.target_body.height), face
+
+
+@action("press_stomach", distance=lambda c: 0.36 * c.H, needs_pose=True,
+        doc="Both open palms pressed flat into the target's stomach, sinking into the soft belly.")
+def press_stomach(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pel = _pel(c, 0, -0.03, 0.03)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 3, 0), chest_rot=(0, 5, 0))
+    pose.feet = _feet(c, (-0.08, 0.05), (0.08, -0.04))
+    tb = c.target_body
+    # the bare belly: around the navel, just under the ribs
+    belly = c.tj("spine") * 0.8 + c.tj("pelvis") * 0.2
+    toward = unit(v(belly[0], 0, belly[2]))
+    across = unit(np.cross(v(0, 1, 0), toward))  # the attacker's left, seen along `toward`
+    r_t = tb.r["waist"] if tb else 0.08
+    sink = c.p("sink", 0.035)
+    hand = c.body.hand
+    presses = []
+    for s, sx in (("r", -1.0), ("l", 1.0)):
+        # palms side by side over the navel, fingers fanned up and slightly inward
+        centre = belly + across * sx * 0.045 * H - toward * (r_t * 0.85 - sink)
+        tip = unit(v(0, 1, 0) * 0.9 - across * sx * 0.35 + toward * 0.15)
+        wrist = centre - tip * 0.42 * hand - toward * 0.012
+        pose.hands[s] = Limb(wrist, v(0.8 if s == "r" else -0.8, -1, -0.3), tip, palm=toward)
+        # the heel/centre of the palm sinks deepest, the fingers a little less
+        presses.append({"point": centre, "dir": toward, "radius": 0.06, "max_depth": 0.06})
+        presses.append({"point": centre + tip * 0.45 * hand - toward * sink * 0.35, "dir": toward,
+                        "radius": 0.045, "max_depth": 0.04})
+    pose.fist = {"l": "flat", "r": "flat"}
+    look = c.p("look", "face")
+    pose.look_at = c.tj("head") if look == "face" else belly
+    mid_w = (pose.hands["l"].target + pose.hands["r"].target) / 2
+    R = c.body.arm_reach
+    # a taller presser bends forward from the hips (then the knees) until the hands are in easy reach
+    for _ in range(10):
+        J = _solve(c, pose)
+        sh_mid = (J["l_shoulder"] + J["r_shoulder"]) / 2
+        dy = sh_mid[1] - mid_w[1]
+        if dy < 0.62 * R:
+            break
+        y_, p_, r_ = pose.pelvis_rot
+        if pose.pelvis[1] > c.rig.rest_pelvis()[1] - 0.14 * H:  # sink into the knees first
+            pose.pelvis = pose.pelvis - v(0, min(dy - 0.62 * R, 0.03 * H), 0.01 * H)
+            pose.feet = _feet(c, (-0.1, 0.1), (0.1, -0.06), (-0.3, 0.3, 1), (0.3, 0.3, 1))
+        elif p_ < 24:
+            pose.pelvis_rot = (y_, p_ + 5, r_)
+        else:
+            break
+    # stand where the elbows are comfortably bent (shoulders ~0.8 arm lengths from the hands)
+    horiz = np.sqrt(max((0.8 * R) ** 2 - dy ** 2, (0.5 * R) ** 2))
+    want = mid_w - unit(v(mid_w[0] - sh_mid[0], 0, mid_w[2] - sh_mid[2])) * horiz
+    return ActionOut(pose, tags=["hands on another's stomach", "pressing", "open hands", "close-up"],
+                     motion=toward * 0.2, impact=belly - toward * r_t, press=presses,
+                     reach=("r_shoulder", v(want[0], J["r_shoulder"][1], want[2]) + (J["r_shoulder"] - sh_mid)))
+
+
+@action("flinch", doc="Being touched/pressed: torso pulling back from the contact, hands catching the wrists, looking down.")
+def flinch(c: ActionCtx) -> ActionOut:
+    H = c.H
+    # the belly gives under the hands and the shoulders draw back from them; eyes down on the hands
+    pel = _pel(c, 0, -0.015, -0.03)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 2, 0), chest_rot=(0, -10, 0), head_rot=(0, 30, 0))
+    pose.feet = _feet(c, (-0.07, 0.0), (0.07, -0.05))
+    J = _solve(c, pose)
+    if c.target is not None and c.p("hands", "grab") == "grab":  # catching the attacker's wrists
+        for s, o in (("l", "r"), ("r", "l")):
+            wr, el = c.tj(f"{o}_wrist"), c.tj(f"{o}_elbow")
+            fa = unit(el - wr)
+            # around the forearm just behind the wrist, from above, clear of the pressing hand
+            g = wr + fa * 0.11 * H + v(0, c.target_body.r["forearm"] + 0.022 * H, 0)
+            pose.hands[s] = Limb(_reach(J, s, g, c.body.arm_reach * 0.95), v(1 if s == "r" else -1, -0.6, -0.4),
+                                 unit(fa * -0.2 + v(0, -0.3, 0) + v(-1 if s == "r" else 1, 0, 0) * 0.5),
+                                 palm=v(0, -1, 0))
+        pose.fist = {"l": "grip", "r": "grip"}
+    else:  # hands flinching up and out of the way
+        _arms(c, pose, "flail_low", "flail_low", dy=0.1)
+        pose.fist = {"l": "relaxed", "r": "relaxed"}
+    pose.look_at = J["spine"] + v(0, 0, 0.25 * H)  # down at the hands on the belly
+    return ActionOut(pose, tags=["flinch", "embarrassed", "blush", "looking down", "grabbing another's wrist"])
+
+
+@action("ear_pull", distance=lambda c: 0.3 * c.H, needs_pose=True,
+        doc="Pinching the target's ear between thumb and finger and pulling it up and out (target: `ear_pulled`).")
+def ear_pull(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return stance(c)
+    pose = PoseParams(pelvis=_pel(c, 0, -0.01, 0), pelvis_rot=(-10, 2, 0), chest_rot=(-8, 4, 0))
+    pose.feet = _feet(c, (-0.08, 0.04), (0.08, -0.04))
+    ear = c.tj(f'{c.p("ear", "l")}_ear')  # by default the target's left ear, on my right-hand side
+    head = c.tj("head")
+    out_dir = unit(ear - head)  # outward from the skull through the ear
+    hr = c.target_body.head_r
+    pinch = ear + out_dir * 0.18 * hr + v(0, 0.12 * hr, 0)  # the rim of the ear, a little above the lobe
+    hand = c.body.hand
+    tip = unit(-out_dir * 0.6 + v(0, 0.45, 0) + v(0, 0, 0.2))
+    wrist = pinch - tip * 0.62 * hand + out_dir * 0.01
+    J = _solve(c, pose)
+    pose.hands["r"] = Limb(wrist, v(0.8, -0.6, -0.3), tip, palm=unit(-out_dir * 0.2 + v(0, -1, 0) * 0.3 +
+                                                                       unit(head - wrist)))
+    pose.hands["l"] = _arm(c, "l", "fist_side", dy=0.15, dz=0.1)  # hand on the hip
+    pose.fist = {"r": "pinch", "l": "relaxed"}
+    pose.look_at = head
+    sh = J["r_shoulder"]
+    # arm's length (elbow soft), and never so close that the faces/chests meet
+    horiz = max(np.sqrt(max((0.86 * c.body.arm_reach) ** 2 - (wrist[1] - sh[1]) ** 2, 0.0)),
+                c.body.r["chest"] + hr + 0.06 * H - abs(wrist[0] - head[0]) * 0.5)
+    want = wrist - unit(v(wrist[0] - sh[0], 0, wrist[2] - sh[2])) * horiz
+    pull = unit(out_dir + v(0, 0.8, 0))
+    return ActionOut(pose, tags=["ear pull", "pinching", "pulling another's ear", "smirk", "close-up"],
+                     motion=pull * 0.3, impact=pinch,
+                     press=[{"point": pinch, "dir": pull, "radius": 0.035, "depth": -0.012}],
+                     reach=("r_shoulder", v(want[0], sh[1], want[2])))
+
+
+@action("ear_pulled", doc="Ear being pinched and pulled: head tilted toward the pull, shoulder hunched, wincing.")
+def ear_pulled(c: ActionCtx) -> ActionOut:
+    H = c.H
+    # which ear is pinched: by default the left (the one facing a right-handed puller's right hand)
+    side = c.p("ear", "l")
+    sx = 1.0 if side == "r" else -1.0
+    # leaning and tilting toward the pull (+roll tilts toward the right in `euler`), rising onto that
+    # side's toes, face turned a little toward the puller
+    pose = PoseParams(pelvis=_pel(c, 0, -0.01, 0), pelvis_rot=(0, 0, 4 * sx), chest_rot=(-6 * sx, 0, 10 * sx),
+                      head_rot=(-12 * sx, -16, 22 * sx))
+    pose.feet = _feet(c, (-0.07, 0.0), (0.07, 0.0))
+    if side == "l":
+        pose.feet["l"] = Limb(v(-0.08 * c.H, c.body.ankle_h + 0.03 * H, 0.0), v(0, 0.3, 1), v(0, -0.6, 0.8))
+    else:
+        pose.feet["r"] = Limb(v(0.08 * c.H, c.body.ankle_h + 0.03 * H, 0.0), v(0, 0.3, 1), v(0, -0.6, 0.8))
+    J = _solve(c, pose)
+    other = "r" if side == "l" else "l"
+    if c.target is not None:  # grabbing the pinching wrist
+        wr, el = c.tj("r_wrist"), c.tj("r_elbow")
+        g = wr + unit(el - wr) * 0.06 * H
+        pose.hands[side] = Limb(_reach(J, side, g, c.body.arm_reach * 0.95), v(sx, -0.8, -0.2), palm=unit(wr - J["head"]))
+        pose.fist[side] = "grip"
+    else:
+        pose.hands[side] = _arm(c, side, "flail", dy=0.1, dz=0.2)
+    pose.hands[other] = _arm(c, other, "flail_low", dy=-0.05, dz=0.1)
+    pose.fist[other] = "claw"
+    return ActionOut(pose, tags=["ear pull", "wince", "one eye closed", "pain", "tears", "open mouth"])
+
+
+def _surface(c: ActionCtx, aim: np.ndarray, part: str) -> tuple:
+    """Where a blow aimed at `aim` meets the target's skin, and the inward normal there (attacker-local).
+    The torso's front faces along its own front normal, not toward the attacker: on a body leaning or
+    folding forward the belly faces down and the chest is in front of it."""
+    tb = c.target_body
+    if part == "head":
+        n = unit(c.tj("nose") - c.tj("head"))
+        n = unit(n * 0.6 + unit(-aim * v(1, 0, 1)) * 0.4)  # mostly the face, partly toward me
+        return aim + n * (tb.head_r if tb else 0.11) * 0.35, -n
+    axis = unit(c.tj("neck") - c.tj("pelvis"))
+    me = unit(-v(aim[0], 0, aim[2]))  # from the target toward me
+    n = me - axis * (me @ axis)
+    n = unit(n) if np.linalg.norm(n) > 1e-6 else me
+    r = (tb.r["chest"] if part == "chest" else tb.r["waist"]) if tb else 0.08
+    return aim + n * r, -n

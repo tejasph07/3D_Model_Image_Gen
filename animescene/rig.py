@@ -98,6 +98,7 @@ class Limb:
     # from the shoulder and pole/tip are directions, all in the chest frame, so the arm keeps its
     # shape however the torso bends, twists or is re-grounded.
     frame: str = "local"
+    palm: np.ndarray | None = None  # direction the palm faces (hands only); None = follow the elbow hinge
 
 
 @dataclass
@@ -190,8 +191,9 @@ class Rig:
         # local x is the character's right
         J["r_eye"] = J["head"] + Rh @ v(0.38 * b.head_r, 0.1 * b.head_r, 0.85 * b.head_r)
         J["l_eye"] = J["head"] + Rh @ v(-0.38 * b.head_r, 0.1 * b.head_r, 0.85 * b.head_r)
-        J["r_ear"] = J["head"] + Rh @ v(0.95 * b.head_r, 0.0, -0.05 * b.head_r)
-        J["l_ear"] = J["head"] + Rh @ v(-0.95 * b.head_r, 0.0, -0.05 * b.head_r)
+        # anime ears sit just under eye level, a little behind the head's centre
+        J["r_ear"] = J["head"] + Rh @ v(0.85 * b.head_r, -0.28 * b.head_r, -0.1 * b.head_r)
+        J["l_ear"] = J["head"] + Rh @ v(-0.85 * b.head_r, -0.28 * b.head_r, -0.1 * b.head_r)
 
         for s, sx in (("r", 1.0), ("l", -1.0)):
             sh = J["neck"] + Rc @ v(sx * b.shoulder_w, -0.025 * b.height, -0.01 * b.height)
@@ -202,14 +204,20 @@ class Rig:
             if limb.frame == "chest":
                 limb = Limb(sh + Rc @ np.asarray(limb.target, float),
                             Rc @ np.asarray(limb.pole, float),
-                            None if limb.tip_dir is None else Rc @ np.asarray(limb.tip_dir, float))
+                            None if limb.tip_dir is None else Rc @ np.asarray(limb.tip_dir, float),
+                            palm=None if limb.palm is None else Rc @ np.asarray(limb.palm, float))
             el, wr = two_bone_ik(sh, np.asarray(limb.target, float), b.upper_arm, b.forearm,
                                  np.asarray(limb.pole, float))
             J[f"{s}_elbow"], J[f"{s}_wrist"] = el, wr
             hd = unit(wr - el) if limb.tip_dir is None else unit(np.asarray(limb.tip_dir, float))
             shape = p.fist.get(s, True)
-            hl = b.hand * {True: 0.55, "fist": 0.55, "grip": 0.6, "claw": 0.75, "relaxed": 0.85}.get(shape, 1.0)
+            hl = b.hand * {True: 0.55, "fist": 0.55, "grip": 0.6, "claw": 0.75, "relaxed": 0.85, "pinch": 0.7}.get(shape, 1.0)
             J[f"{s}_hand"] = wr + hd * hl
+            if limb.palm is not None:  # the palm faces this way (perpendicular to the hand's direction)
+                pm = np.asarray(limb.palm, float)
+                pm = pm - hd * (pm @ hd)
+                if np.linalg.norm(pm) > 1e-6:
+                    J[f"{s}_palm"] = wr + unit(pm) * 0.05
 
             hip = pel + Rp @ v(sx * b.hip_w, -0.035 * b.height, 0)
             J[f"{s}_hip"] = hip

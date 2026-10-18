@@ -19,6 +19,8 @@ RENDER_DIR = Path(__file__).resolve().parents[1] / "render3d"
 
 # action tag -> VRM expression weights
 EXPRESSIONS = [
+    (("wince", "one eye closed"), {"sad": 0.45, "angry": 0.25, "blinkLeft": 1.0, "ih": 0.55}),
+    (("flinch", "embarrassed"), {"surprised": 0.35, "sad": 0.25, "oh": 0.3}),
     (("pain", "being choked", "screaming", "tears"), {"sad": 0.6, "aa": 0.7, "blink": 0.25}),
     (("surprised", "falling", "off balance", "stumbling", "wide-eyed"), {"surprised": 0.8, "aa": 0.5}),
     (("doubled over",), {"sad": 0.4, "surprised": 0.5, "aa": 0.9}),
@@ -65,14 +67,25 @@ def set_for(staged) -> dict:
 
 def build_job(staged, out_png: str | Path) -> dict:
     scene, cam = staged.scene, staged.cam
+    dents = {a.name: [] for a in scene.actors}
+    for a in scene.actors:  # presses an action makes on its target's body (soft-body dents)
+        if a.out is not None and a.target and a.out.press:
+            for pr in a.out.press:
+                dw = a.F @ np.asarray(pr["dir"], float)
+                dents[a.target].append({"pos": a.to_world(np.asarray(pr["point"], float)).tolist(),
+                                        "dir": (dw / max(np.linalg.norm(dw), 1e-9)).tolist(),
+                                        "depth": float(pr.get("depth", 0.0)), "radius": float(pr["radius"]),
+                                        "maxDepth": float(pr.get("max_depth", 0.06))})
     actors = []
     for a in scene.actors:
         if not a.char.model:
             raise ValueError(f"{a.name} has no 3D model; set 'model' to one of the VRM library entries")
         rel = model_path(a.char.model).resolve().relative_to(ASSETS.resolve())
+        # the eyes follow the pose's own look target (the head was turned toward it within a human range);
+        # poses without one (reeling, doubled over, held) keep their eyes straight ahead with the head
         look = None
-        if a.target:
-            look = scene.actor(a.target).joints["head"].tolist()
+        if a.out.pose.look_at is not None:
+            look = a.to_world(np.asarray(a.out.pose.look_at, float)).tolist()
         actors.append({
             "model": f"/assets/{rel.as_posix()}",
             "scale": a.char.scale,
@@ -80,6 +93,7 @@ def build_job(staged, out_png: str | Path) -> dict:
             "expression": expression_for(a),
             "lookAt": look,
             "fist": a.out.pose.fist,
+            "dents": dents[a.name],
             "motion": (a.F @ a.out.motion).tolist() if np.linalg.norm(a.out.motion) > 1e-6 else None,
         })
     return {"out": str(out_png), "width": cam.width, "height": cam.height,

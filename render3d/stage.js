@@ -38,6 +38,140 @@ const CHILD = { hips: "spine", spine: "chest", chest: "upperChest", upperChest: 
   leftUpperArm: "leftLowerArm", leftLowerArm: "leftHand", leftHand: "leftMiddleProximal",
   rightUpperArm: "rightLowerArm", rightLowerArm: "rightHand", rightHand: "rightMiddleProximal" };
 
+// Soft-body contacts: up to MAX_DENTS presses per mesh, applied after skinning. Each dent pushes the
+// surface along `dir` by `depth` with a smooth falloff over `radius`, raises a small bulge ring
+// around it (displaced flesh), and tilts the shading normals so the dent reads in toon shading.
+// Negative depth pulls the surface (a pinched ear, a grabbed cheek).
+const MAX_DENTS = 6;
+const DENT_GLSL = `
+#ifdef SOFT_DENTS
+  for (int i = 0; i < ${MAX_DENTS}; i++) {
+    if (i >= dentCount) break;
+    vec3 rel = transformed - dentPos[i];
+    vec3 dir = dentDir[i];
+    float along = dot(rel, dir);
+    vec3 lat = rel - dir * along;
+    float x = length(lat) / dentRad[i];
+    float depthFall = 1.0 - smoothstep(dentRad[i] * 0.6, dentRad[i] * 1.8, abs(along));
+    float facing = smoothstep(-0.35, 0.25, dot(normalize(objectNormal), -dir));
+    float w = depthFall * facing * dentMask;
+    float f = x < 1.0 ? (1.0 - x * x) * (1.0 - x * x) : 0.0;
+    float bulge = smoothstep(0.75, 1.05, x) * (1.0 - smoothstep(1.05, 1.7, x));
+    transformed += dir * dentDepth[i] * (f - 0.32 * bulge) * w;
+    #if !defined(OUTLINE) && !defined(FLAT_SHADED)
+      vec3 radial = length(lat) > 1e-6 ? lat / length(lat) : vec3(0.0);
+      float slope = x < 1.0 ? dentDepth[i] / dentRad[i] * 4.0 * x * (1.0 - x * x) : 0.0;
+      vNormal = normalize(vNormal - normalMatrix * radial * min(slope * 2.5, 0.55) * w);
+    #endif
+  }
+#endif
+`;
+
+const ARM_BONES = ["Shoulder", "UpperArm", "LowerArm", "Hand", "Thumb", "Index", "Middle", "Ring", "Little"];
+
+function dentMaskFor(o, vrm) {  // 1 = flesh that can be pressed in; arms/hands are rigid here
+  const g = o.geometry;
+  if (g.getAttribute("dentMask")) return;
+  const n = g.getAttribute("position").count;
+  const mask = new Float32Array(n).fill(1);
+  const si = g.getAttribute("skinIndex"), sw = g.getAttribute("skinWeight");
+  if (o.isSkinnedMesh && si && sw && vrm) {
+    const arm = new Set();
+    for (const name of Object.keys(vrm.humanoid.humanBones)) {
+      if (ARM_BONES.some((k) => name.includes(k))) {
+        const b = vrm.humanoid.getRawBoneNode(name);
+        if (b) arm.add(b);
+      }
+    }
+    const isArm = o.skeleton.bones.map((b) => {  // a bone under an arm bone (e.g. sleeve springs) counts too
+      for (let p = b; p; p = p.parent) if (arm.has(p)) return true;
+      return false;
+    });
+    for (let i = 0; i < n; i++) {
+      let a = 0;
+      for (let k = 0; k < 4; k++) if (isArm[si.getComponent(i, k)]) a += sw.getComponent(i, k);
+      mask[i] = Math.max(0, 1 - a * 1.5);
+    }
+  }
+  g.setAttribute("dentMask", new THREE.BufferAttribute(mask, 1));
+}
+
+function softBody(root, vrm) {  // install the dent hook on every material of a model instance
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    dentMaskFor(o, vrm);
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach((m) => {
+      if (m.userData.dentU) return;
+      const U = {
+        dentCount: { value: 0 },
+        dentPos: { value: Array.from({ length: MAX_DENTS }, () => new THREE.Vector3()) },
+        dentDir: { value: Array.from({ length: MAX_DENTS }, () => new THREE.Vector3(0, 0, 1)) },
+        dentRad: { value: new Array(MAX_DENTS).fill(0.05) },
+        dentDepth: { value: new Array(MAX_DENTS).fill(0) },
+      };
+      m.userData.dentU = U;
+      const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
+      m.onBeforeCompile = (sh, r) => {
+        if (prev) prev.call(m, sh, r);
+        Object.assign(sh.uniforms, U);
+        sh.vertexShader = sh.vertexShader
+          .replace("void main() {", `#define SOFT_DENTS\nattribute float dentMask;\nuniform int dentCount;\nuniform vec3 dentPos[${MAX_DENTS}];
+uniform vec3 dentDir[${MAX_DENTS}];\nuniform float dentRad[${MAX_DENTS}];\nuniform float dentDepth[${MAX_DENTS}];
+void main() {`)
+          .replace("#include <skinning_vertex>", "#include <skinning_vertex>\n" + DENT_GLSL);
+      };
+      m.customProgramCacheKey = () => (prevKey ? prevKey.call(m) : "") + "|dents";
+      m.needsUpdate = true;
+    });
+  });
+}
+
+// A press is given as the attacker's effector surface point and push direction. Find the victim's
+// actual (skinned) surface under it by raycasting, and dent exactly as deep as the effector went in.
+function measureDents(entry, presses) {
+  const out = [];
+  const ray = new THREE.Raycaster();
+  entry.scene.updateMatrixWorld(true);
+  const meshes = [];
+  entry.scene.traverse((o) => { if (o.isMesh && o.visible && !/hair/i.test(o.name + (o.parent ? o.parent.name : ""))) meshes.push(o); });
+  for (const p of presses || []) {
+    const pos = V(p.pos), dir = V(p.dir).normalize();
+    const back = p.reach || 0.25;
+    ray.set(pos.clone().addScaledVector(dir, -back), dir);
+    ray.far = back + 0.25;
+    const hit = ray.intersectObjects(meshes, false)[0];
+    if (!hit) continue;
+    const pen = pos.clone().sub(hit.point).dot(dir);  // > 0: the effector is inside the surface
+    if (pen < -0.01 && p.depth >= 0) continue;  // not touching
+    const depth = p.depth < 0 ? p.depth : Math.min(Math.max(pen, 0) + (p.extra ?? 0.006), p.maxDepth || 0.08);
+    out.push({ pos: hit.point.toArray(), dir: dir.toArray(), depth, radius: p.radius });
+  }
+  return out;
+}
+
+function setDents(entry, dents) {  // dents in world space -> each mesh's local (post-skinning) space
+  entry.scene.updateMatrixWorld(true);
+  entry.scene.traverse((o) => {
+    if (!o.isMesh) return;
+    const inv = new THREE.Matrix4().copy(o.matrixWorld).invert();
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach((m) => {
+      const U = m.userData.dentU;
+      if (!U) return;
+      const list = (dents || []).slice(0, MAX_DENTS);
+      U.dentCount.value = list.length;
+      list.forEach((d, i) => {
+        U.dentPos.value[i].copy(V(d.pos)).applyMatrix4(inv);
+        U.dentDir.value[i].copy(V(d.dir)).transformDirection(inv);
+        const s = new THREE.Vector3(1, 0, 0).applyMatrix4(inv).sub(new THREE.Vector3(0, 0, 0).applyMatrix4(inv)).length();
+        U.dentRad.value[i] = d.radius * s;
+        U.dentDepth.value[i] = d.depth * s;
+      });
+    });
+  });
+}
+
 async function loadVRM(url, key = url) {
   if (cache.has(key)) return cache.get(key);
   const gltf = await loader.loadAsync(url);
@@ -45,6 +179,7 @@ async function loadVRM(url, key = url) {
   VRMUtils.removeUnnecessaryVertices(gltf.scene);
   VRMUtils.rotateVRM0(vrm);  // every model faces +Z
   vrm.scene.traverse((o) => { o.frustumCulled = false; });
+  softBody(vrm.scene, vrm);
   vrm.scene.updateMatrixWorld(true);
   // rest pose in world space (normalized bones: identity local rotation at rest)
   const rest = {};
@@ -168,7 +303,10 @@ function pose(entry, J, opts) {
     setWorldQuat(nl, deltaRotation(restL, restH, ld, h).multiply(rest[low].quat));
     if (ne && rest[end]) {
       const td = j[jt].clone().sub(j[je]);
-      if (isArm) {
+      if (isArm && j[`${side}_palm`]) {  // explicit palm direction: rest palms face down in the T-pose
+        const pm = j[`${side}_palm`].clone().sub(j[je]);
+        setWorldQuat(ne, deltaRotation(restDir(end), new THREE.Vector3(0, -1, 0), td, pm).multiply(rest[end].quat));
+      } else if (isArm) {
         setWorldQuat(ne, deltaRotation(restDir(end), restH, td, h).multiply(rest[end].quat));
       } else {
         const fu = j[`${side}_foot_up`];
@@ -207,6 +345,8 @@ function pose(entry, J, opts) {
     flat: { f: [0.04, 0.06, 0.04], spread: 0.0, thumb: [0.12, 0.1, 0.05] },
     grip: { f: [1.0, 1.1, 0.8], spread: 0, thumb: [0.5, 0.45, 0.4] },
     claw: { f: [0.55, 1.0, 0.8], spread: 0.15, thumb: [0.35, 0.4, 0.4] },
+    // thumb and index meet (pinching an ear, a cheek); the other fingers tucked
+    pinch: { f: [1.25, 1.3, 1.0], index: [0.75, 0.85, 0.55], spread: 0, thumb: [0.75, 0.55, 0.45] },
   };
   for (const side of ["left", "right"]) {
     let shape = opts.fist ? opts.fist[side[0]] : true;
@@ -219,7 +359,8 @@ function pose(entry, J, opts) {
       ["Proximal", "Intermediate", "Distal"].forEach((seg, si) => {
         const n = N(`${side}${f}${seg}`);
         if (!n) return;
-        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), s * (S.f[si] + extra));
+        const curl = (f === "Index" && S.index) ? S.index[si] : S.f[si] + extra;
+        const q = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), s * curl);
         if (si === 0 && S.spread) q.premultiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), s * S.spread * (fi - 1.2) * 0.5));
         n.quaternion.copy(q);
       });
@@ -232,7 +373,7 @@ function pose(entry, J, opts) {
   // expression + gaze
   const em = vrm.expressionManager;
   if (em) {
-    for (const k of ["happy", "angry", "sad", "relaxed", "surprised", "aa", "ih", "ou", "ee", "oh", "blink"]) em.setValue(k, 0);
+    for (const k of ["happy", "angry", "sad", "relaxed", "surprised", "aa", "ih", "ou", "ee", "oh", "blink", "blinkLeft", "blinkRight"]) em.setValue(k, 0);
     for (const [k, w] of Object.entries(opts.expression || {})) em.setValue(k, w);
   }
   if (vrm.lookAt) {
@@ -325,9 +466,11 @@ window.renderJob = async (job) => {
     entries.push(entry);
     pose(entry, a.joints, a);
     if (job.springs !== false) settleSprings(entry, a.motion);
+    entry.presses = a.dents;
     entry.scene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(entry.scene);
   }
+  for (const e of entries) { e.lastDents = measureDents(e, e.presses); setDents(e, e.lastDents); }
   const sl = scene.userData.shadowLight;
   if (sl) {  // fit the shadow camera around the actors, light direction kept
     const box = new THREE.Box3(); entries.forEach((e) => box.expandByObject(e.scene));
@@ -348,7 +491,7 @@ window.renderJob = async (job) => {
   const out = { beauty: renderer.domElement.toDataURL("image/png") };
   // where the mesh's bones actually ended up (raw skeleton), for checking against the solver
   out.bones = entries.map((e) => {
-    const r = {};
+    const r = { _dents: e.lastDents, _presses: e.presses };
     for (const b of ["hips", "head", "leftUpperArm", "leftLowerArm", "leftHand", "rightUpperArm", "rightLowerArm",
       "rightHand", "leftUpperLeg", "leftLowerLeg", "leftFoot", "rightUpperLeg", "rightLowerLeg", "rightFoot"]) {
       const n = e.vrm.humanoid.getRawBoneNode(b);

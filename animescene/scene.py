@@ -18,7 +18,7 @@ ASPECTS = {"landscape": (1216, 832), "portrait": (832, 1216), "square": (1024, 1
            "wide": (1344, 768), "tall": (768, 1344)}
 
 ACTION_KEYS = {"action", "target", "at", "facing", "altitude", "bearing", "distance"}
-PARAM_KEYS = {"style", "phase", "aim", "leg", "lift", "effect", "arms", "hands"}
+PARAM_KEYS = {"style", "phase", "aim", "leg", "lift", "effect", "arms", "hands", "sink", "look", "ear"}
 UPPER = ["head", "head_top", "nose", "neck", "chest", "spine", "pelvis", "l_shoulder", "r_shoulder",
          "l_elbow", "r_elbow", "l_wrist", "r_wrist", "l_hand", "r_hand"]
 
@@ -99,11 +99,13 @@ def focus_points(scene, focus: list) -> np.ndarray:
     """Points a close-up must frame: "Name", "Name.upper", "Name.head", "Name.<joint>", "impact"."""
     pts = []
     for item in focus:
-        if item == "impact":
+        if item.split(":")[0] == "impact":  # "impact" or "impact:<half-size in m>" for a tighter shot
+            r = float(item.split(":")[1]) if ":" in item else 0.25
             for a in scene.actors:
                 if a.out.impact is not None:
                     c = a.to_world(a.out.impact)
-                    pts += [c + d for d in np.array([[.25, 0, 0], [-.25, 0, 0], [0, .25, 0], [0, -.25, 0]])]
+                    pts += [c + d * r for d in np.array([[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0],
+                                                         [0, 0, 1], [0, 0, -1]])]
             continue
         name, _, part = item.partition(".")
         a = scene.actor(name)

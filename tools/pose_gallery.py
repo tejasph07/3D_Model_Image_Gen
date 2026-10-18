@@ -62,13 +62,16 @@ def main():
             chars = [a]
             if vic:
                 a["target"] = "V"
+                a.setdefault("bearing", -90)  # fixed layout (attacker on -x) so azimuth really orbits
                 chars = [{"name": "V", "model": V, "gender": "male", "weapon": "fists", "action": vic, "target": "A", "at": [0.0, 0.0],
-                          "facing": 90, **vp}, a]
+                          **vp}, a]
             else:
                 a.setdefault("at", [0.0, 0.0])
                 a.setdefault("facing", 0)
             spec = {"setting": "day", "camera": {"shot": opts.get("shot", "full"), "azimuth": az, "elevation": elev,
-                                                 "margin": 0.04}, "characters": chars}
+                                                 "margin": float(opts.get("margin", 0.04))}, "characters": chars}
+            if opts.get("focus"):
+                spec["camera"]["focus"] = opts["focus"].split(",")
             st = stage_scene(spec, Cast(), size=(W, Hh))
             jobs.append(build_job(st, tmp / f"{i}_{int(az)}.png"))
             stages.append(st)
