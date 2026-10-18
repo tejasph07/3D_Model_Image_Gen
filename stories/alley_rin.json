@@ -251,9 +251,10 @@
       "layout": "half",
       "camera": {
         "shot": "closeup",
-        "azimuth": -100,
+        "azimuth": 150,
+        "elevation": 6,
         "focus": [
-          "Rin",
+          "Rin.upper",
           "Kaito.upper"
         ],
         "margin": 0.06
