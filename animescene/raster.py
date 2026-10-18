@@ -203,3 +203,50 @@ def render(scene: SolvedScene, cam: Camera, ground: bool = True) -> Frame:
     finite = np.isfinite(tbuf)
     depth[finite] = (tbuf * zfac)[finite]
     return Frame(depth, ids, parts, normals, cam)
+
+
+SOFT_TARGETS = {"spine", "pelvis", "chest"}  # body parts that visibly give under a blow
+
+
+def apply_dents(scene: SolvedScene, frame: Frame, depth_m: float = 0.045, sigma_m: float = 0.075) -> list:
+    """Push the victim's surface in around a blow's contact point (plus a small bulge ring).
+
+    Strikes into soft tissue (stomach, sides) then show up in the depth control as a real
+    deformation of the body under the fist/palm/knee instead of two shapes merely overlapping."""
+    cam = frame.cam
+    H, W = frame.depth.shape
+    yy, xx = np.mgrid[0:H, 0:W]
+    names = [a.name for a in scene.actors]
+    dents = []
+    for a in scene.actors:
+        if a.out is None or a.out.impact is None or a.target not in names:
+            continue
+        v = scene.actors[names.index(a.target)]
+        p = a.to_world(a.out.impact)
+        part = min(("head", "neck", "chest", "spine", "pelvis"), key=lambda k: np.linalg.norm(v.joints[k] - p))
+        if part not in SOFT_TARGETS:
+            continue
+        u, vv, z = cam.project(p[None])[0]
+        if z <= 0:
+            continue
+        vi = names.index(v.name)
+        r_px = sigma_m * cam.f / z
+        d = np.hypot(xx - u, yy - vv) / r_px  # in units of sigma
+        own = frame.ids == vi
+        prof = np.exp(-d ** 2) - 0.25 * np.exp(-((d - 1.8) / 0.45) ** 2)
+        frame.depth[own] += (depth_m * prof)[own]
+        dents.append((v.name, part, (float(u), float(vv))))
+    return dents
+
+
+def export_stage(scene: SolvedScene, cam: Camera) -> dict:
+    """The solved stage as plain data (for web viewers): primitives per actor + the camera."""
+    actors = []
+    for i, a in enumerate(scene.actors):
+        prims = [{"k": p.kind, "a": [round(float(x), 4) for x in p.a], "b": [round(float(x), 4) for x in p.b],
+                  "r": round(float(p.r), 4), "part": p.part} for p in body_prims(a, i)]
+        actors.append({"name": a.name, "action": a.action, "target": a.target, "prims": prims,
+                       "joints": {k: [round(float(x), 4) for x in v] for k, v in a.joints.items()}})
+    return {"actors": actors,
+            "camera": {"eye": [float(x) for x in cam.eye], "fwd": [float(x) for x in cam.fwd],
+                       "up": [float(x) for x in cam.up], "fov": cam.fov, "aspect": cam.width / cam.height}}

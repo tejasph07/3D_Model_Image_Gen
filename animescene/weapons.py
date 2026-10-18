@@ -26,6 +26,7 @@ WEAPONS = {
     "staff": Weapon("staff", 0.9, 0.75, 0.018, True, "staff, holding staff", "pole"),
     "scythe": Weapon("scythe", 1.1, 0.5, 0.02, True, "scythe, holding scythe", "pole"),
     "fists": Weapon("fists", 0.0, 0.0, 0.0, False, "", "none"),
+    "boxing_gloves": Weapon("boxing_gloves", 0.0, 0.0, 0.0, False, "boxing gloves", "none"),
     "magic": Weapon("magic", 0.0, 0.0, 0.0, False, "magic", "ranged"),
 }
 

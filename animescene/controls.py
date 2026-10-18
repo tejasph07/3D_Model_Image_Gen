@@ -95,7 +95,9 @@ def depth_image(frame: Frame, far_factor: float = 2.2) -> Image.Image:
     finite = np.isfinite(d)
     if body.any():
         zb = d[body]
-        near, far = zb.min(), zb.max() * far_factor
+        near = zb.min()
+        # subjects fill most of the range whatever the shot size; the world falls off behind them
+        far = max(zb.max() + (zb.max() - near) * 0.8 + 0.5, zb.max() * (1 + (far_factor - 1) * 0.35))
     else:
         near, far = d[finite].min(), d[finite].max()
     disp = np.zeros_like(d)

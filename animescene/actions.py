@@ -199,6 +199,11 @@ def stance(c: ActionCtx) -> ActionOut:
         out.weapon_dirs = {"r": unit(v(0.2, 0.6, 0.8)), "l": unit(v(-0.3, -0.5, 0.8))}
     elif c.weapon.reach_class == "pole":
         _grip(c, pose, v(0.1, 0.55, -0.02) * H, v(-0.1, 0.2, 1.0), out)
+    elif c.p("style") == "boxing" or c.weapon.kind == "boxing_gloves":  # peek-a-boo guard
+        pose.hands["l"] = _hand(-0.05, 0.86, 0.12, H, (-0.3, -1, 0.2))
+        pose.hands["r"] = _hand(0.05, 0.85, 0.1, H, (0.3, -1, 0.2))
+        pose.pelvis_rot, pose.chest_rot = (18, 12, 0), (-10, 10, 0)
+        out.tags += ["boxing", "fighting stance", "clenched hands"]
     elif c.weapon.kind == "magic":
         pose.hands["r"] = _hand(0.1, 0.7, 0.3, H, (1, -1, 0), tip=(0, 0.3, 1))
         pose.hands["l"] = _hand(-0.08, 0.68, 0.18, H, (-1, -1, 0), tip=(0, 0.6, 0.7))
@@ -225,23 +230,44 @@ def _punch_distance(c: ActionCtx) -> float:
 @action("punch", distance=_punch_distance, needs_pose=True,
         doc="Straight punch landing on the target (aim: head|chest|stomach); style: straight|uppercut.")
 def punch(c: ActionCtx) -> ActionOut:
+    """Styles: straight (rear cross), jab (lead hand), hook (from the side), uppercut, body (to the gut)."""
     H = c.H
     style = c.p("style", "straight")
-    pel = _pel(c, 0, -0.07, 0.06)
-    pose = PoseParams(pelvis=pel, pelvis_rot=(-22, 8, 0), chest_rot=(-16, 10, 0), look_at=c.tj("head"))
+    if style not in ("straight", "jab", "hook", "uppercut", "body"):
+        raise ValueError(f"unknown punch style {style!r}")
+    hand = "l" if style == "jab" else "r"
+    other = "r" if hand == "l" else "l"
+    low = style == "body"
+    pel = _pel(c, 0, -0.12 if low else -0.07, 0.06)
+    twist = {"straight": -22, "jab": 12, "hook": -34, "uppercut": -18, "body": -24}[style]
+    pose = PoseParams(pelvis=pel, pelvis_rot=(twist, 14 if low else 8, 0),
+                      chest_rot=(twist * 0.7, 14 if low else 10, 0), look_at=c.tj("head"))
     pose.feet = _feet(c, (-0.08, 0.2), (0.13, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
-    aim = c.aim("head")
-    head_r = c.target_body.head_r if c.target_body else 0.11
-    toward = unit(aim - _approx_chest(c, pel, 10))
-    fist = aim - toward * (head_r + 0.3 * c.body.hand)  # wrist target: knuckles on the surface
-    pole = (1, -0.4, 0) if style == "straight" else (0.6, -1, 0.2)
-    pose.hands["r"] = Limb(fist, v(*pole))
-    pose.hands["l"] = _hand(-0.05, 0.8, 0.13, H, (-0.5, -1, 0))
-    tags = ["punching", "motion lines", "impact"]
-    if style == "uppercut":
-        tags.append("uppercut")
-    return ActionOut(pose, tags=tags + _base_tags(c), motion=toward, impact=fist + toward * head_r * 0.9,
-                     reach=("r_wrist", fist))
+    aim = c.aim("stomach" if low else "head")
+    tb = c.target_body
+    surf = {"head": tb.head_r if tb else 0.11}.get(c.p("aim", "head"), None) if not low else None
+    if surf is None:
+        surf = (tb.r["waist"] if tb else 0.09) if (low or c.p("aim") in ("stomach", "body", "gut")) else \
+            ((tb.r["chest"] if tb else 0.1) if c.p("aim") == "chest" else (tb.head_r if tb else 0.11))
+    chest = _approx_chest(c, pel, 10)
+    toward = unit(aim - chest)
+    if style == "hook":  # the fist arrives from the outside, travelling across
+        across = unit(v(-1, 0, 0.35))
+        fist = aim - across * (surf + 0.3 * c.body.hand) * 0.6 - toward * (surf + 0.3 * c.body.hand) * 0.8
+        pole, motion = (1, 0.9, -0.2), across
+    elif style == "uppercut":
+        fist = aim - unit(toward + v(0, -1.2, 0)) * (surf + 0.3 * c.body.hand)
+        pole, motion = (0.5, -1, 0.2), unit(v(0, 1, 0.4))
+    else:
+        fist = aim - toward * (surf + 0.3 * c.body.hand)  # wrist target: knuckles on the surface
+        pole, motion = ((-1 if hand == "l" else 1), -0.4, 0), toward
+    pose.hands[hand] = Limb(fist, v(*pole))
+    sx = 1 if other == "r" else -1
+    pose.hands[other] = _hand(sx * 0.06, 0.8, 0.13, H, (sx * 0.5, -1, 0))  # guard at the chin
+    tags = ["punching", "motion lines", "impact"] + {"jab": ["jab"], "hook": ["hook punch"], "uppercut": ["uppercut"],
+                                                     "body": ["body blow", "stomach punch"], "straight": []}[style]
+    return ActionOut(pose, tags=tags + _base_tags(c), motion=motion, impact=fist + toward * surf * 0.9,
+                     reach=(f"{hand}_wrist", fist))
 
 
 def _kick_distance(c: ActionCtx) -> float:
@@ -849,7 +875,7 @@ def palm_strike(c: ActionCtx) -> ActionOut:
     aim = c.aim("stomach")
     r_t = c.target_body.r["waist"] if c.target_body else 0.09
     toward = unit(v(aim[0], 0, aim[2]) - v(0, 0, 0))
-    wrist = aim - toward * (r_t + 0.035 * H) - v(0, 0.035 * H, 0)  # heel of the palm on the surface
+    wrist = aim - toward * (r_t + 0.012 * H) - v(0, 0.035 * H, 0)  # heel of the palm sinking into the surface
     pose.hands["r"] = Limb(wrist, v(1, -0.6, 0), toward * 0.3 + v(0, 1, 0))
     pose.hands["l"] = _hand(-0.12, 0.66, 0.06, H, (-0.5, -1, 0))
     pose.fist = {"l": True, "r": False}
@@ -867,7 +893,7 @@ def doubled_over(c: ActionCtx) -> ActionOut:
     H = c.H
     lift = c.p("lift", 0.03) * H
     pel = _pel(c, 0, -0.03, -0.04) + v(0, lift, 0)
-    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 30, 0), chest_rot=(0, 30, 0), head_rot=(0, -6, 0),
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 24, 0), chest_rot=(0, 24, 0), head_rot=(0, -14, 0),
                       grounded=lift <= 0)
     ah = c.body.ankle_h
     pose.feet["l"] = Limb(v(-0.08 * H, ah + lift * 0.6, -0.14 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))

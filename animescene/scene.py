@@ -11,7 +11,7 @@ from PIL import Image
 from .camera import Camera, frame_camera
 from .characters import Cast, Character
 from .controls import color_blocks, debug_view, depth_image, draw_openpose, keypoints, normal_image, regions
-from .raster import Frame, render
+from .raster import Frame, apply_dents, render
 from .stage import Actor, SolvedScene, Stage
 
 ASPECTS = {"landscape": (1216, 832), "portrait": (832, 1216), "square": (1024, 1024),
@@ -86,8 +86,9 @@ def stage_scene(spec_in, cast: Cast | None = None, size: tuple | None = None) ->
     cam = frame_camera(pts, W, H, **camspec)
     record_injuries(spec, scene, cast)
     frame = render(scene, cam, ground=spec.get("ground", True))
-    kps = keypoints(scene, frame)
+    kps = keypoints(scene, frame)  # occlusion tested on the undeformed bodies
     masks = regions(scene, frame)
+    apply_dents(scene, frame)
     return Staged(spec, chars, scene, cam, frame, kps, masks,
                   pose=draw_openpose(kps, W, H), depth=depth_image(frame), normal=normal_image(frame),
                   debug=debug_view(scene, frame, kps, masks),

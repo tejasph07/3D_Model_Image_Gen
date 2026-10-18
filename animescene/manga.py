@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 
+import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 PAGE_W = 1600
@@ -136,12 +137,17 @@ def compose_pages(story: dict, panels: list, out: Path, max_rows: int = 4) -> li
                 def to_cell(p):
                     return ((p[0] - ox) * k, (p[1] - oy) * k)
 
+                heads = [to_cell(a["head"]) for a in meta.get("actors", {}).values()]
                 for s in panel.get("sfx", []):
                     pts = meta.get("impacts", [])
                     if s.get("at") == "impact" and pts:
                         px, py = to_cell(pts[0])
-                        _sfx(cell, (min(max(px, 80), cw - 80), min(max(py - h * 0.18, 60), h - 60)), s["text"],
-                             int(h * 0.13))
+                        # beside the hit, never on it or on a face: farthest candidate from both
+                        cands = [(px + dx * cw, py + dy * h) for dx in (-0.28, 0.28) for dy in (-0.22, 0.0, 0.22)]
+                        cands = [(min(max(x_, cw * 0.15), cw * 0.85), min(max(y_, h * 0.12), h * 0.88)) for x_, y_ in cands]
+                        best = max(cands, key=lambda q: min([np.hypot(q[0] - hx, q[1] - hy) for hx, hy in heads]
+                                                            + [np.hypot(q[0] - px, q[1] - py) * 1.5]))
+                        _sfx(cell, best, s["text"], int(h * 0.11))
                 cd = ImageDraw.Draw(cell)
                 font = _font(max(18, int(h * 0.045)))
                 used = []
@@ -158,7 +164,7 @@ def compose_pages(story: dict, panels: list, out: Path, max_rows: int = 4) -> li
                     _bubble(cd, (bx, by), dlg["text"], font, (hx, hy), cw * 0.28)
                     used.append((bx, by))
                 if panel.get("caption"):
-                    cf = _font(max(18, int(h * 0.04)))
+                    cf = _font(max(16, int(h * 0.03)))
                     tw = cd.textlength(panel["caption"], font=cf)
                     cd.rectangle([8, 8, 8 + tw + 24, 8 + cf.size * 1.6], fill=(250, 248, 240), outline="black", width=3)
                     cd.text((20, 8 + cf.size * 0.25), panel["caption"], fill="black", font=cf)

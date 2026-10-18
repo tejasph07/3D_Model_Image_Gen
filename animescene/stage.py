@@ -21,7 +21,7 @@ REACTIONS = {"knocked_back", "staggered", "dodge", "fallen", "kneel", "headlocke
 # reactions whose body is moved so the attacker's blow actually lands on it
 HIT_REACTIONS = {"knocked_back", "staggered", "knee_buckle", "doubled_over", "stumble"}
 # attackers that hold on to the victim's actual (reacting) body rather than its pre-hit stance
-HOLDS = {"headlock", "rear_choke", "leg_lock", "knee_strike"}
+HOLDS = {"headlock", "rear_choke", "leg_lock", "knee_strike", "palm_strike"}
 ATTACKS = {"slash", "thrust", "leap_attack", "punch", "kick", "flying_kick", "charge", "palm_strike",
            "spinning_back_kick", "back_knee_kick", "knee_strike", "headlock", "rear_choke", "leg_lock"}
 
@@ -198,8 +198,9 @@ class Stage:
                 delta = delta - flat * back
             # keep flying along the blow until the bodies no longer pass through each other
             step = unit(v(motion[0], 0, motion[2])) * 0.05
+            tol = -0.06 if t.action == "doubled_over" else 0.0  # a folded body may lean onto its attacker
             for _ in range(30):
-                if self._body_clearance(t, att, delta) > 0:
+                if self._body_clearance(t, att, delta) > tol:
                     break
                 delta = delta + step
             t.origin = t.origin + delta

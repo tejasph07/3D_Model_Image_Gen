@@ -198,6 +198,19 @@ def _pattern(inj: dict, px: float) -> np.ndarray:
     return img
 
 
+def _looks_like_skin(img: np.ndarray, x: float, y: float, px: float) -> bool:
+    """Is the area around (x, y) skin-toned (anime skin: light, warm, low-mid saturation)?"""
+    r = max(2, int(px * 0.4))
+    H, W = img.shape[:2]
+    patch = img[max(0, int(y) - r):min(H, int(y) + r + 1), max(0, int(x) - r):min(W, int(x) + r + 1)]
+    if patch.size == 0:
+        return False
+    hsv = cv2.cvtColor((patch * 255).astype(np.uint8), cv2.COLOR_RGB2HSV).reshape(-1, 3).astype(float)
+    h, s, v = hsv[:, 0] * 2, hsv[:, 1] / 255, hsv[:, 2] / 255
+    skin = ((h < 40) | (h > 340)) & (s > 0.06) & (s < 0.65) & (v > 0.35)
+    return skin.mean() > 0.5
+
+
 def draw(image: Image.Image, actor, cam: Camera, depth: np.ndarray, ids: np.ndarray, actor_index: int,
          size_scale: tuple = (1.0, 1.0)) -> tuple[Image.Image, list]:
     """Composite all of an actor's stored injuries. Returns (image, list of drawn injuries)."""
@@ -225,6 +238,8 @@ def draw(image: Image.Image, actor, cam: Camera, depth: np.ndarray, ids: np.ndar
         px = inj["size"] * cam.f / z * sx
         if px < 2:
             continue
+        if inj["kind"] in ("bruise", "swelling", "scar") and not _looks_like_skin(out, x * sx, y * sy, px):
+            continue  # covered by clothing in this panel: the wound is still there, just not visible
         dec = _pattern(inj, px)
         # orient: decal x along the projected bone, decal +y along projected gravity
         a, b = BONES[inj["bone"]][0], BONES[inj["bone"]][1]

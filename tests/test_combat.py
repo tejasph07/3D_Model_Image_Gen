@@ -86,3 +86,28 @@ def test_clutching_hands_are_on_the_stomach():
     a, v = pair("kick", "clutch_stomach", ap={"aim": "stomach"})
     for s in "lr":
         assert np.linalg.norm(v.joints[f"{s}_wrist"] - v.joints["spine"]) < 0.3
+
+
+@pytest.mark.parametrize("style", ["straight", "jab", "hook", "uppercut", "body"])
+def test_every_punch_style_lands(style):
+    a, v = pair("punch", "stand", ap={"style": style, "weapon": "boxing_gloves"})
+    hand = "l" if style == "jab" else "r"
+    fist = (a.joints[f"{hand}_wrist"] + a.joints[f"{hand}_hand"]) / 2
+    if style == "body":
+        gap = np.linalg.norm(fist - v.joints["spine"]) - v.char.body.r["waist"]
+    else:
+        gap = np.linalg.norm(fist - v.joints["head"]) - v.char.body.head_r
+    assert gap < 0.1, (style, gap)
+
+
+def test_cross_counter_both_fists_land():
+    """Two boxers punching each other at the same instant (a cross-counter)."""
+    spec = {"characters": [
+        {"name": "A", "seed": 1, "gender": "male", "weapon": "boxing_gloves", "action": "punch", "target": "B",
+         "at": [0, 0]},
+        {"name": "B", "seed": 2, "gender": "male", "weapon": "boxing_gloves", "action": "punch", "target": "A"}]}
+    s = stage_scene(spec, Cast(), size=(96, 96))
+    for me, them in (("A", "B"), ("B", "A")):
+        x, y = s.scene.actor(me), s.scene.actor(them)
+        fist = (x.joints["r_wrist"] + x.joints["r_hand"]) / 2
+        assert np.linalg.norm(fist - y.joints["head"]) - y.char.body.head_r < 0.12

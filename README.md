@@ -36,9 +36,25 @@ scene JSON ──▶ 3D stage: rigs, IK, contacts, hit reactions, collisions, ca
   airborne.
 * **Characters on the fly, consistent forever.** Describe someone loosely or
   not at all; the designer fills in a coherent anime design (hair, eyes,
-  archetype outfit, weapon, body) and keeps every fighter's palette distinct
-  so colours can't bleed. Designs persist in `cast.json` and return
-  identically in later scenes. LoRAs can be attached per character.
+  archetype outfit, weapon, body). The first time a character appears it gets
+  a generated **turnaround sheet** (front / side / back). Every later render
+  runs the sheet through the UNet and lets each pixel of that character's 3D
+  region attend to the sheet's features (*regional reference attention*), so
+  face, hair, outfit and weapon stay on-model across panels and never bleed
+  onto another fighter. Designs and sheets persist in `cast.json`; LoRAs can
+  be attached per character as well.
+* **Injuries are code, not prompts.** A wound is stored on the character as a
+  point on the body surface (bone, position along it, angle around it) plus a
+  seeded pattern. Blows record wounds at their exact 3D contact point; every
+  later panel re-projects them through the posed body, tests visibility
+  against the depth buffer and composites the identical cut / bruise /
+  bandage. The image model is never asked to draw injuries.
+* **Grappling and dirty fighting.** Headlocks, rear chokes, ankle locks,
+  knee strikes in the clinch, back-of-the-knee kicks, spinning back kicks,
+  palm strikes with an energy blast, every boxing punch — with reactions that
+  follow the blow (doubling over, clutching the stomach, stumbling, knee
+  buckling, being knocked flying). Soft-tissue hits dent the victim's body in
+  the depth control.
 
 ## Quick start
 
@@ -55,6 +71,9 @@ python -m animescene render scenes/shrine_clash.json -o out/shrine -q high
 
 # design a character on the fly (saved to cast.json, reused by name)
 python -m animescene character Yui "pink-haired petite mage girl in a violet robe"
+
+# a whole multi-panel story -> manga pages (shared cast, persistent injuries)
+python -m animescene comic stories/alley_rin.json -o out/alley
 
 # story -> scene with Claude (needs ANTHROPIC_API_KEY), then render
 python -m animescene story "Kaze drops out of the storm onto Lena..." -o out/ambush --render
@@ -95,8 +114,12 @@ animescene/
   prompts.py     global / per-character / background prompts from the solved stage
   diffusion.py   SDXL + ControlNet-Union sampler with regional cross-attention, img2img, inpaint
   pipeline.py    base -> hires -> per-character detail
-  story.py       story text -> scene JSON via Claude
-scenes/          showcase scenes
+  sheets.py      character turnaround sheets (identity references)
+  injuries.py    persistent wounds: body-surface anchors, seeded decals, occlusion tests
+  manga.py       page layout, narration boxes, speech bubbles, SFX
+  story.py       story text -> scene JSON via Claude; multi-panel story runner
+scenes/          single-scene examples
+stories/         multi-panel stories (alley fight, boxing title bout)
 showcase/        rendered results
 tests/           stage physics, prompts, regional-attention maths
 tools/           action_sheet.py (pose inspection), fetch_models.py

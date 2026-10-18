@@ -1,0 +1,241 @@
+{
+  "title": "Title Bout: Round 7",
+  "setting": "boxing ring, ropes, canvas floor, arena, crowd in background, spotlights, sweat drops",
+  "lighting": "stage lights, spotlight, rim light, dramatic lighting",
+  "seed": 707,
+  "cast": [
+    {
+      "name": "Hayato",
+      "gender": "male",
+      "archetype": "brawler",
+      "build": "athletic",
+      "hair_color": "black",
+      "hair": "short hair, messy hair",
+      "eyes": "grey",
+      "outfit": "topless male, red boxing trunks, white waistband, red boxing gloves, boxing shoes",
+      "weapon": "boxing_gloves",
+      "palette": "crimson",
+      "expression": "determined",
+      "seed": 31
+    },
+    {
+      "name": "Drago",
+      "gender": "male",
+      "archetype": "brawler",
+      "build": "muscular",
+      "hair_color": "silver",
+      "hair": "undercut",
+      "eyes": "golden",
+      "outfit": "topless male, black boxing trunks, gold trim, black boxing gloves, scar on chest",
+      "weapon": "boxing_gloves",
+      "palette": "golden",
+      "expression": "smirk",
+      "seed": 32
+    },
+    {
+      "name": "Ref",
+      "gender": "male",
+      "archetype": "brawler",
+      "build": "slim",
+      "hair_color": "grey",
+      "hair": "short hair",
+      "eyes": "black",
+      "outfit": "referee, white shirt, black bow tie, black pants",
+      "palette": "slate",
+      "seed": 33
+    }
+  ],
+  "panels": [
+    {
+      "id": "b1",
+      "layout": "wide",
+      "caption": "Round 7. Hayato can barely see out of his left eye.",
+      "camera": {
+        "shot": "low_angle",
+        "azimuth": 15,
+        "margin": 0.04
+      },
+      "characters": [
+        {
+          "name": "Hayato",
+          "action": "stance",
+          "style": "boxing",
+          "target": "Drago",
+          "at": [
+            -0.9,
+            0.0
+          ],
+          "inflict": [
+            {
+              "kind": "swelling",
+              "spot": "l_brow",
+              "size": 0.06
+            },
+            {
+              "kind": "cut",
+              "spot": "r_cheek",
+              "size": 0.04
+            }
+          ]
+        },
+        {
+          "name": "Drago",
+          "action": "punch",
+          "style": "jab",
+          "aim": "head",
+          "target": "Hayato"
+        },
+        {
+          "name": "Ref",
+          "action": "stand",
+          "target": "Hayato",
+          "at": [
+            0.2,
+            -2.2
+          ]
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Drago",
+          "text": "Stay down this time."
+        }
+      ]
+    },
+    {
+      "id": "b2",
+      "layout": "half",
+      "camera": {
+        "shot": "closeup",
+        "azimuth": 85,
+        "focus": [
+          "Hayato.upper",
+          "Drago.upper"
+        ]
+      },
+      "characters": [
+        {
+          "name": "Hayato",
+          "action": "punch",
+          "style": "straight",
+          "target": "Drago",
+          "at": [
+            0.0,
+            0.0
+          ]
+        },
+        {
+          "name": "Drago",
+          "action": "punch",
+          "style": "straight",
+          "target": "Hayato",
+          "inflict": [
+            {
+              "kind": "bleeding_cut",
+              "size": 0.05
+            }
+          ]
+        }
+      ],
+      "caption": "Cross counter!",
+      "sfx": [
+        {
+          "text": "BAM!!",
+          "at": "impact"
+        }
+      ]
+    },
+    {
+      "id": "b3",
+      "layout": "half",
+      "camera": {
+        "shot": "closeup",
+        "azimuth": 70,
+        "focus": [
+          "Hayato.upper",
+          "Drago.upper",
+          "impact"
+        ]
+      },
+      "characters": [
+        {
+          "name": "Drago",
+          "action": "doubled_over",
+          "target": "Hayato",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "inflict": [
+            {
+              "kind": "bruise",
+              "size": 0.1
+            }
+          ]
+        },
+        {
+          "name": "Hayato",
+          "action": "punch",
+          "style": "body",
+          "target": "Drago"
+        }
+      ],
+      "sfx": [
+        {
+          "text": "DOSH",
+          "at": "impact"
+        }
+      ]
+    },
+    {
+      "id": "b4",
+      "layout": "wide",
+      "caption": "The liver shot lands. Drago folds.",
+      "camera": {
+        "shot": "low_angle",
+        "azimuth": 15,
+        "margin": 0.05
+      },
+      "characters": [
+        {
+          "name": "Drago",
+          "action": "clutch_stomach",
+          "target": "Hayato",
+          "at": [
+            0.6,
+            0.0
+          ]
+        },
+        {
+          "name": "Hayato",
+          "action": "stance",
+          "style": "boxing",
+          "target": "Drago",
+          "at": [
+            -0.7,
+            0.4
+          ]
+        },
+        {
+          "name": "Ref",
+          "action": "point",
+          "target": "Drago",
+          "at": [
+            2.0,
+            -1.3
+          ]
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Ref",
+          "text": "ONE! TWO!"
+        },
+        {
+          "who": "Hayato",
+          "text": "Get up."
+        }
+      ]
+    }
+  ]
+}

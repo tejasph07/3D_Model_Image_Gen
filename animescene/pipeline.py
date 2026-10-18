@@ -32,7 +32,7 @@ class Quality:
     detail_size: int = 1024
     color_init: float = 0.0  # >0: start the base pass from the 3D colour-block render at this strength
     references: bool = True  # identity via each character's turnaround sheet (reference attention)
-    ref_weight: float = 1.0
+    ref_weight: float = 2.2
 
 
 PRESETS = {
@@ -68,16 +68,18 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
     st.debug.save(out / "stage_debug.png")
     st.colors.save(out / "control_colors.png")
     (out / "prompts.json").write_text(json.dumps(pr, indent=2))
+    from .raster import export_stage
+    (out / "stage3d.json").write_text(json.dumps(export_stage(st.scene, st.cam)))
     log(f"[stage] {len(st.chars)} characters solved in {time.time() - t0:.1f}s")
 
     masks = st.masks
     effects = effect_regions(st)
     if effects:  # glowing effects take over part of the region they sit in
-        e_all = np.clip(sum(m for _, m in effects), 0, 1) * 0.7
+        e_all = np.clip(sum(m for _, m in effects), 0, 1) * 0.5
         masks = masks * (1 - e_all)[None]
-    bg = np.clip(1 - masks.sum(0) - (sum(m for _, m in effects) * 0.7 if effects else 0), 0, 1)
+    bg = np.clip(1 - masks.sum(0) - (sum(m for _, m in effects) * 0.5 if effects else 0), 0, 1)
     regions = [(p, m) for p, m in zip(pr["regions"], masks)] + [(pr["background"], bg)]
-    regions += [(p, m * 0.7) for p, m in effects]
+    regions += [(p, m * 0.5) for p, m in effects]
 
     # identity: every character attends to its own turnaround sheet, inside its own region only
     refs = []

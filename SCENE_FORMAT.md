@@ -45,6 +45,7 @@ unless you want to.
 | `fov` | vertical field of view |
 | `margin` | framing margin as a fraction of the frame (negative crops) |
 | `aspect` | `landscape` (default), `portrait`, `square`, `wide`, `tall` |
+| `focus` | frame only these: `"Name"`, `"Name.upper"`, `"Name.head"`, `"Name.<joint>"`, `"impact"` (use with `closeup` / `extreme_closeup`) |
 
 ## Characters
 
@@ -79,6 +80,7 @@ Action (on the character object):
 | `distance` | metres from the target, overriding the action's natural range |
 | `facing` | degrees or another character's name (default: the target) |
 | `altitude` | metres of extra height for airborne actions |
+| `inflict` | wounds this character receives in this scene: `[{"kind": "cut"}]` lands at the 3D contact point of the blow it takes (or `"from": "Name"`), or `[{"kind": "bruise", "spot": "l_cheek"}]` at a named spot. Kinds: `bruise`, `cut`, `bleeding_cut`, `scar`, `bandage`, `swelling`. Stored in the cast and drawn in every later scene at the same body location with the same pattern |
 
 ### Actions
 
@@ -97,6 +99,22 @@ Action (on the character object):
 | `staggered` | grounded hit reaction, also aligned to the blow |
 | `dodge` | leaning/jumping back and aside |
 | `cast` | spell: arm outstretched at the target, palm open; `style`: `one_hand` / `two_hands` |
+| `palm_strike` | open palm pressed into the target (default `aim: stomach`); `style: energy` adds an energy-blast region at the contact |
+| `knee_strike` | clinch: hands pull the target's head down, knee driven into the stomach |
+| `spinning_back_kick` | back turned, heel driven backward and up into the neck/head (`aim`) |
+| `back_knee_kick` | from behind, stomp into the hollow of the target's knee (`leg`: `l`/`r`); pair with `knee_buckle` |
+| `headlock` / `headlocked` | front headlock: the victim bent over, head trapped under the arm, forearm under the throat |
+| `rear_choke` / `choked` | chokehold from behind; the victim claws at the forearm |
+| `leg_lock` / `leg_locked` | ground ankle lock: attacker sitting at the feet, ankle trapped, leaning back; victim flat on the back |
+| `doubled_over` | gut-shot reaction: folded around the blow, onto the toes, mouth open |
+| `clutch_stomach` | hunched, both hands on the stomach |
+| `stumble` | stumbling back, legs crossing, arms windmilling |
+| `knee_buckle` | knee kicked out: dropping toward one knee, off balance |
+
+`punch` styles: `straight`, `jab` (lead hand), `hook`, `uppercut`, `body`. `stance` with `style: boxing` is a peek-a-boo
+guard. Reactions (`knocked_back`, `staggered`, `doubled_over`, `stumble`, `knee_buckle`) are moved so the struck part is
+where the blow actually landed; holds (`headlock`, `rear_choke`, `leg_lock`, `knee_strike`, `palm_strike`) attach to the
+victim's reacting body. Gut shots dent the victim's surface in the depth control.
 | `charge` | sprinting at the target |
 | `grab` | collar grab with the right hand, left fist cocked |
 | `point` | pointing (or the weapon) at the target |
@@ -111,3 +129,22 @@ Action (on the character object):
 * Reactions point at the attacker: `{"action": "knocked_back", "target": "Mira"}`.
 * A three-quarter camera (`azimuth` 20–35) reads better than a pure profile.
 * Low angles (`low_angle`, `worms_eye`) make fights epic; `high_angle` for chaos overviews.
+
+## Stories (multi-panel)
+
+`python -m animescene comic story.json -o out/` renders a story file: a shared `cast`, story-wide `setting` /
+`lighting` / `seed`, and `panels`, each a scene (characters referenced by name) plus page furniture:
+
+```json
+{"id": "p3", "layout": "half", "caption": "Too slow.",
+ "camera": {"shot": "closeup", "azimuth": -30, "focus": ["Rin.upper", "Kaito.upper"]},
+ "characters": [{"name": "Rin", "action": "stumble", "target": "Kaito", "at": [0, 0],
+                 "inflict": [{"kind": "bleeding_cut"}]},
+                {"name": "Kaito", "action": "punch", "aim": "face", "target": "Rin"}],
+ "dialogue": [{"who": "Kaito", "text": "Too slow!"}],
+ "sfx": [{"text": "CRACK", "at": "impact"}]}
+```
+
+`layout`: `wide` (full row), `half` (two per row), `full`, `tall`. Speech bubbles point at the speaker's head and SFX
+sit beside the impact, both placed from the 3D stage. Each character gets a turnaround sheet the first time it appears;
+every panel then attends to it for identity. See `stories/` for complete examples.
