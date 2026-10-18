@@ -52,3 +52,44 @@ def parse_scene_json(text: str) -> dict:
     if not isinstance(scene.get("characters"), list) or not scene["characters"]:
         raise ValueError("scene has no characters")
     return scene
+
+
+# ------------------------------------------------------------------ multi-panel stories
+def panel_spec(story: dict, panel: dict) -> dict:
+    """A panel inherits the story's setting/lighting/seed; characters come from the cast by name."""
+    spec = {k: story[k] for k in ("setting", "lighting", "style", "negative") if k in story}
+    spec.update({k: v for k, v in panel.items() if k not in ("layout", "caption", "dialogue", "sfx")})
+    spec["title"] = f"{story.get('title', 'story')}/{panel['id']}"
+    spec.setdefault("seed", story.get("seed", 0) + 17 * (story["panels"].index(panel) + 1))
+    return spec
+
+
+def run_story(path, engine, out_dir, quality="high", only: list | None = None, log=print) -> list:
+    """Render every panel in order with one shared cast (designs, sheets and injuries persist),
+    then lay the panels out as manga pages."""
+    from .characters import Cast
+    from .manga import compose_pages
+    from .pipeline import generate
+
+    story = json.loads(Path(path).read_text())
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cast = Cast(out / "cast.json")
+    used = [c.palette for c in cast.chars.values()]
+    for cs in story.get("cast", []):
+        if cs["name"] not in cast.chars:
+            used.append(cast.resolve(cs, used).palette)
+    cast.save()
+    results = []
+    for panel in story["panels"]:
+        pdir = out / panel["id"]
+        if only and panel["id"] not in only:
+            if (pdir / "final.png").exists():
+                results.append((panel, pdir))
+            continue
+        log(f"=== panel {panel['id']}")
+        generate(panel_spec(story, panel), engine, pdir, quality, cast=cast, log=log)
+        results.append((panel, pdir))
+    pages = compose_pages(story, [(p, d) for p, d in results if (d / "final.png").exists()], out)
+    log(f"[story] pages: {', '.join(str(p) for p in pages)}")
+    return pages

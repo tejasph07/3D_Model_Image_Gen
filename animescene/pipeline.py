@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -31,6 +31,8 @@ class Quality:
     detail_steps: int = 22
     detail_size: int = 1024
     color_init: float = 0.0  # >0: start the base pass from the 3D colour-block render at this strength
+    references: bool = True  # identity via each character's turnaround sheet (reference attention)
+    ref_weight: float = 1.0
 
 
 PRESETS = {
@@ -69,8 +71,22 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
     log(f"[stage] {len(st.chars)} characters solved in {time.time() - t0:.1f}s")
 
     masks = st.masks
-    bg = np.clip(1 - masks.sum(0), 0, 1)
+    effects = effect_regions(st)
+    if effects:  # glowing effects take over part of the region they sit in
+        e_all = np.clip(sum(m for _, m in effects), 0, 1) * 0.7
+        masks = masks * (1 - e_all)[None]
+    bg = np.clip(1 - masks.sum(0) - (sum(m for _, m in effects) * 0.7 if effects else 0), 0, 1)
     regions = [(p, m) for p, m in zip(pr["regions"], masks)] + [(pr["background"], bg)]
+    regions += [(p, m * 0.7) for p, m in effects]
+
+    # identity: every character attends to its own turnaround sheet, inside its own region only
+    refs = []
+    if q.references:
+        from .diffusion import Reference
+        from .sheets import ensure_sheets, reference_prompt
+        sheets = ensure_sheets(engine, cast or Cast(), st.chars, seed=seed, log=log)
+        refs = [Reference(sheets[c.name], reference_prompt(c), mask=np.clip(m * 1.3, 0, 1), weight=q.ref_weight)
+                for c, m in zip(st.chars, st.masks)]
     loras = [l for c in st.chars for l in c.lora]
     if loras or engine.loaded_loras:
         engine.set_loras(loras)
@@ -78,7 +94,7 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
     controls = {"openpose": (st.pose, q.pose_scale), "depth": (st.depth, q.depth_scale)}
     img = engine.sample(pr["global"], pr["negative"], W, H, steps=q.steps, cfg=q.cfg, seed=seed,
                         controls=controls, control_end=q.control_end, regions=regions,
-                        base_weight=q.base_weight, progress="base",
+                        base_weight=q.base_weight, progress="base", references=refs,
                         **({"init_image": st.colors, "strength": q.color_init} if q.color_init > 0 else {}))
     img.save(out / "base.png")
 
@@ -86,22 +102,70 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
         W2, H2 = int(W * q.hires) // 64 * 64, int(H * q.hires) // 64 * 64
         up = img.resize((W2, H2), Image.LANCZOS)
         m2 = [(p, cv2.resize(m, (W2, H2))) for p, m in regions]
+        r2 = [replace(r, mask=cv2.resize(r.mask, (W2, H2))) for r in refs]
         c2 = {"openpose": (_scaled(st.pose, (W2, H2)), q.pose_scale * 0.6),
               "depth": (_scaled(st.depth, (W2, H2)), q.depth_scale * 0.6)}
         img = engine.sample(pr["global"], pr["negative"], W2, H2, steps=q.hires_steps, cfg=q.cfg - 0.5,
                             seed=seed + 1, controls=c2, control_end=0.6, regions=m2, base_weight=q.base_weight,
-                            init_image=up, strength=q.hires_strength, progress="hires")
+                            init_image=up, strength=q.hires_strength, references=r2, progress="hires")
         img.save(out / "hires.png")
 
     if q.detail:
-        img = detail_pass(engine, st, pr, img, q, seed, out)
+        img = detail_pass(engine, st, pr, img, q, seed, out, refs)
 
+    img = draw_injuries(st, img)
     img.save(out / "final.png")
+    (out / "meta.json").write_text(json.dumps(panel_meta(st, img.size), indent=2))
     log(f"[done] {out / 'final.png'} in {time.time() - t0:.0f}s")
     return {"final": str(out / "final.png"), "prompts": pr}
 
 
-def detail_pass(engine, st: Staged, pr: dict, img: Image.Image, q: Quality, seed: int, out: Path) -> Image.Image:
+def effect_regions(st: Staged) -> list:
+    """(prompt, mask) discs around the contact point of actions that carry a visual effect."""
+    out = []
+    H, W = st.frame.ids.shape
+    yy, xx = np.mgrid[0:H, 0:W]
+    for a in st.scene.actors:
+        if not a.out.effect or a.out.impact is None:
+            continue
+        p = a.to_world(a.out.impact)
+        u, v_, z = st.cam.project(p[None])[0]
+        r = 0.32 * st.cam.f / max(z, 0.1)
+        m = np.clip(1.3 - np.hypot(xx - u, yy - v_) / r, 0, 1).astype(np.float32)
+        out.append((P._join(a.out.effect), m))
+    return out
+
+
+def panel_meta(st: Staged, size) -> dict:
+    """Where things are in the final image (for speech bubbles / SFX placement)."""
+    sx, sy = size[0] / st.size[0], size[1] / st.size[1]
+    meta = {"size": list(size), "actors": {}, "impacts": []}
+    for a in st.scene.actors:
+        hu, hv, _ = st.cam.project(a.joints["head"][None])[0]
+        tu, tv, _ = st.cam.project(a.joints["head_top"][None])[0]
+        meta["actors"][a.name] = {"head": [hu * sx, hv * sy], "head_top": [tu * sx, tv * sy],
+                                  "head_r_px": float(abs(hv - tv) * sy)}
+        if a.out.impact is not None:
+            iu, iv, _ = st.cam.project(a.to_world(a.out.impact)[None])[0]
+            meta["impacts"].append([iu * sx, iv * sy])
+    ys, xs = np.nonzero(st.frame.ids >= 0)
+    if len(xs):
+        meta["subjects"] = [float(xs.min() * sx), float(ys.min() * sy), float(xs.max() * sx), float(ys.max() * sy)]
+    return meta
+
+
+def draw_injuries(st: Staged, img: Image.Image) -> Image.Image:
+    from .injuries import draw
+    W, H = img.size
+    scale = (W / st.size[0], H / st.size[1])
+    for i, a in enumerate(st.scene.actors):
+        if a.char.injuries:
+            img, _ = draw(img, a, st.cam, st.frame.depth, st.frame.ids, i, scale)
+    return img
+
+
+def detail_pass(engine, st: Staged, pr: dict, img: Image.Image, q: Quality, seed: int, out: Path,
+                refs: list | None = None) -> Image.Image:
     """Re-render each character in a zoomed crop (like ADetailer, but driven by the 3D masks)."""
     W, H = img.size
     sx, sy = W / st.size[0], H / st.size[1]
@@ -134,9 +198,10 @@ def detail_pass(engine, st: Staged, pr: dict, img: Image.Image, q: Quality, seed
         ctl = {"openpose": (st.pose.crop(box).resize((tw, th)), q.pose_scale * 0.7),
                "depth": (st.depth.crop(box).resize((tw, th)), q.depth_scale * 0.6)}
         prompt = P._join(pr["regions"][i], "solo focus")
+        ref = [replace(refs[i], mask=None, weight=q.ref_weight)] if refs else None
         res = engine.sample(prompt, pr["negative"], tw, th, steps=q.detail_steps, cfg=q.cfg - 0.5, seed=seed + 10 + i,
                             controls=ctl, control_end=0.6, init_image=crop, strength=q.detail_strength,
-                            inpaint_mask=inpaint, progress=f"detail {a.name}")
+                            inpaint_mask=inpaint, references=ref, progress=f"detail {a.name}")
         res = res.resize((X1 - X0, Y1 - Y0), Image.LANCZOS)
         alpha = cv2.resize(inpaint, (X1 - X0, Y1 - Y0))[..., None]
         base = np.asarray(img).astype(np.float32).copy()

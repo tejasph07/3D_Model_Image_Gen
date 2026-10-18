@@ -16,6 +16,8 @@ SHOTS = {
     "high_angle": (28.0, 0.08, 40.0),
     "birds_eye": (55.0, 0.08, 40.0),
     "medium": (4.0, -0.25, 34.0),  # negative margin crops into the action
+    "closeup": (3.0, 0.05, 30.0),  # use with camera.focus
+    "extreme_closeup": (2.0, 0.0, 24.0),
 }
 
 

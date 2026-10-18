@@ -13,7 +13,7 @@ booru tags that describe it to the image model.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
@@ -33,6 +33,24 @@ class ActionCtx:
     target_body: Body | None = None
     target_weapon: tuple | None = None  # (grip, tip) of target's weapon, actor-local
     altitude: float | None = None
+    # world-space view of the target, for actions that mount themselves onto the target's body
+    target_world: dict | None = None
+    target_yaw: float = 0.0
+    target_origin: np.ndarray | None = None
+    to_local: Callable | None = None  # world point -> actor-local (current placement)
+    origin: np.ndarray | None = None  # actor's current world placement
+
+    def tw(self, name: str) -> np.ndarray:
+        return self.target_world[name]
+
+    @property
+    def t_fwd(self) -> np.ndarray:
+        return v(np.sin(self.target_yaw), 0, np.cos(self.target_yaw))
+
+    @property
+    def t_right(self) -> np.ndarray:  # target's own right (world)
+        f = self.t_fwd
+        return v(-f[2], 0, f[0])
 
     @property
     def H(self) -> float:
@@ -72,6 +90,11 @@ class ActionOut:
     impact: np.ndarray | None = None
     # contact the solver should make exact by stepping in/out: (effector joint, desired point, local)
     reach: tuple | None = None
+    # (origin world, yaw radians): put the actor exactly here relative to the target's body
+    mount: tuple | None = None
+    turn: float | None = None  # world yaw the action needs (e.g. back to the target), origin kept
+    # booru tags for a glowing effect painted around the impact point (regional prompt)
+    effect: str = ""
 
 
 ACTIONS: dict[str, Callable[[ActionCtx], ActionOut]] = {}
@@ -604,3 +627,314 @@ def point(c: ActionCtx) -> ActionOut:
         pose.hands["r"] = Limb(chest + v(0.15 * H, 0.08 * H, 0) + dirn * c.body.arm_reach, v(1, -0.5, 0))
         pose.fist["r"] = False
     return out
+
+
+# ============================================================================ close combat
+# Mounted actions place the attacker on the target's *solved* body (ctx.target_world): the
+# victim's reaction pose is solved first, then the attacker is positioned and posed around it.
+
+def _yaw(d: np.ndarray) -> float:
+    return float(np.arctan2(d[0], d[2]))
+
+
+def _fwd_right(yaw: float):
+    f = v(np.sin(yaw), 0, np.cos(yaw))
+    return f, v(-f[2], 0, f[0])
+
+
+def _mount_local(c: ActionCtx, origin: np.ndarray, yaw: float, p: np.ndarray) -> np.ndarray:
+    """World point -> local coordinates of an actor standing at (origin, yaw)."""
+    f, r = _fwd_right(yaw)
+    d = p - v(origin[0], 0, origin[2])
+    return v(d @ r, d[1], d @ f)
+
+
+def _limb_world(c, origin, yaw, side, point, pole_local, tip=None):
+    return Limb(_mount_local(c, origin, yaw, point), v(*pole_local), None if tip is None else v(*tip))
+
+
+@action("headlock", needs_pose=True,
+        doc="Front headlock: the target (doubled over, use `headlocked`) has its head trapped under the right arm.")
+def headlock(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return stance(c)
+    head, neck = c.tw("head"), c.tw("neck")
+    yaw = _yaw(-c.t_fwd)  # face the victim
+    f, r = _fwd_right(yaw)
+    armpit_h = 0.66 * H
+    drop = float(np.clip(armpit_h - head[1], 0.0, 0.16 * H))
+    origin = head - r * 0.1 * H - f * 0.05 * H
+    origin = v(origin[0], 0, origin[2])
+    pose = PoseParams(pelvis=_pel(c, 0, 0, -0.02) - v(0, drop, 0), pelvis_rot=(22, -10, 0), chest_rot=(10, -4, 0),
+                      look_at=_mount_local(c, origin, yaw, head))
+    pose.feet = _feet(c, (-0.12, 0.12), (0.14, -0.12), (-0.3, 0.3, 1), (0.3, 0.3, 1))
+    grip = neck - v(0, 0.07, 0) - r * 0.1  # forearm under the throat, hand out the far side
+    pose.hands["r"] = _limb_world(c, origin, yaw, "r", grip, (1, 0.3, -0.4))
+    pose.hands["l"] = _limb_world(c, origin, yaw, "l", grip - r * 0.05 + v(0, 0.04, 0) - f * 0.04, (-1, -0.4, -0.3))
+    out = ActionOut(pose, tags=["headlock", "grappling", "arm around neck", "clenched teeth", "angry"],
+                    motion=v(0, 0, -0.3), impact=_mount_local(c, origin, yaw, neck), mount=(origin, yaw))
+    return out
+
+
+@action("headlocked", doc="Bent over at the waist with the head trapped in the target's headlock, struggling.")
+def headlocked(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pel = _pel(c, 0, -0.08, -0.04)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 52, 0), chest_rot=(0, 26, 0), head_rot=(0, -48, 0))
+    pose.feet = _feet(c, (-0.1, -0.16), (0.1, 0.06), (0, 0.4, 1), (0, 0.4, 1))
+    head = c.rig.solve(pose)["head"]
+    pose.hands["r"] = Limb(head + v(0.1, 0.04, -0.06) * H, v(1, -0.5, -0.4))
+    pose.hands["l"] = Limb(head + v(-0.1, 0.06, -0.04) * H, v(-1, -0.5, -0.4))
+    return ActionOut(pose, tags=["headlock", "bent over", "being choked", "struggling", "pain", "clenched teeth",
+                                 "sweat", "grabbing another's arm"])
+
+
+@action("rear_choke", needs_pose=True, doc="Chokehold from behind: forearm across the target's throat.")
+def rear_choke(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return stance(c)
+    yaw = c.target_yaw
+    f, r = _fwd_right(yaw)
+    neck, head, pel_t = c.tw("neck"), c.tw("head"), c.tw("pelvis")
+    origin = v(pel_t[0], 0, pel_t[2]) - f * 0.17 * H
+    lift = float(np.clip(head[1] + 0.02 - (c.body.hip_h + 0.45 * H), -0.15 * H, 0.0))
+    pose = PoseParams(pelvis=_pel(c, 0, 0, 0) + v(0, lift, 0), pelvis_rot=(-10, -10, 0), chest_rot=(-6, -4, 0),
+                      look_at=_mount_local(c, origin, yaw, head + f * 0.5))
+    pose.feet = _feet(c, (-0.12, 0.06), (0.12, -0.12))
+    front = neck + f * 0.06 - v(0, 0.01, 0)
+    pose.hands["r"] = _limb_world(c, origin, yaw, "r", front - r * 0.11, (1, -0.3, -0.2))
+    pose.hands["l"] = _limb_world(c, origin, yaw, "l", head - f * 0.1 + v(0, 0.02, 0), (-1, 0.0, -0.3))
+    return ActionOut(pose, tags=["chokehold", "rear naked choke", "grappling", "from behind", "clenched teeth"],
+                     impact=_mount_local(c, origin, yaw, front), mount=(origin, yaw))
+
+
+@action("choked", doc="Being choked from behind: arched back, clawing at the forearm across the throat.")
+def choked(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pose = PoseParams(pelvis=_pel(c, 0, -0.02, 0.02), pelvis_rot=(0, -8, 0), chest_rot=(0, -10, 0),
+                      head_rot=(-12, -22, 0))
+    pose.feet = _feet(c, (-0.08, 0.1), (0.09, 0.02))
+    J = c.rig.solve(pose)  # where the arched neck actually is
+    neck_front = J["neck"] + unit(J["nose"] - J["head"]) * 0.05 * H
+    pose.hands["r"] = Limb(neck_front + v(0.06, -0.04, 0.03) * H, v(1, -0.6, 0))
+    pose.hands["l"] = Limb(neck_front + v(-0.06, -0.03, 0.04) * H, v(-1, -0.6, 0))
+    return ActionOut(pose, tags=["being choked", "struggling", "tears", "open mouth", "pain", "hands on another's arm"])
+
+
+@action("leg_lock", needs_pose=True,
+        doc="Ankle lock on the ground: sitting at the target's feet (target uses `leg_locked`), ankle trapped, leaning back.")
+def leg_lock(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return stance(c)
+    ankle, tpel = c.tw("r_ankle"), c.tw("pelvis")
+    d = unit(v(ankle[0] - tpel[0], 0, ankle[2] - tpel[2]))
+    origin = v(ankle[0], 0, ankle[2]) + d * 0.13 * H
+    yaw = _yaw(-d)
+    f, r = _fwd_right(yaw)
+    pose = PoseParams(pelvis=v(0, c.body.r["pelvis"] * 1.05, 0), pelvis_rot=(0, -26, 0), chest_rot=(0, -6, 0),
+                      look_at=_mount_local(c, origin, yaw, c.tw("head")))
+    ah = c.body.ankle_h
+    pose.feet = {"l": Limb(v(-0.15 * H, ah, 0.4 * H), v(0, 1, 0.2)), "r": Limb(v(0.15 * H, ah, 0.38 * H), v(0, 1, 0.2))}
+    wrap = ankle - r * 0.07 + v(0, -0.02, 0)
+    pose.hands["r"] = _limb_world(c, origin, yaw, "r", wrap, (1, -0.6, -0.2))
+    pose.hands["l"] = _limb_world(c, origin, yaw, "l", wrap - r * 0.05 + v(0, 0.05, 0) - f * 0.03, (-1, -0.6, -0.2))
+    return ActionOut(pose, tags=["leg lock", "ankle lock", "grappling", "sitting", "on ground", "leaning back",
+                                 "clenched teeth"], impact=_mount_local(c, origin, yaw, ankle), mount=(origin, yaw))
+
+
+@action("leg_locked", doc="Flat on the back with one leg trapped straight up in the target's leg lock.")
+def leg_locked(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pel = v(0, c.body.r["pelvis"] * 1.0, 0)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, -90, 0), chest_rot=(0, 12, 6), head_rot=(10, 30, 0))
+    pose.feet["r"] = Limb(v(0.06 * H, 0.33 * H, 0.42 * H), v(0, 1, 0.1))
+    pose.feet["l"] = Limb(v(-0.12 * H, 0.04 * H, 0.3 * H), v(0, 1, 0.3))
+    pose.hands["l"] = Limb(v(-0.36 * H, 0.03 * H, -0.12 * H), v(0, 1, 0))
+    pose.hands["r"] = Limb(v(0.3 * H, 0.03 * H, -0.05 * H), v(0, 1, 0))
+    return ActionOut(pose, tags=["lying", "on back", "leg lock", "pain", "screaming", "tears", "clenched hands"])
+
+
+def _hip_reach(c: ActionCtx, hip_h: float, target_h: float, frac=0.95) -> float:
+    leg = c.body.leg_len * frac
+    dy = abs(hip_h - target_h)
+    return float(np.sqrt(max(leg * leg - dy * dy, (0.1 * c.H) ** 2)))
+
+
+@action("back_knee_kick", needs_pose=True,
+        doc="Stomp kick into the back of the target's knee from behind (target: `knee_buckle`, facing away).")
+def back_knee_kick(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return kick(c)
+    side = c.p("leg", "l")  # which of the target's knees
+    knee = c.tw(f"{side}_knee")
+    yaw = c.target_yaw
+    f, r = _fwd_right(yaw)
+    point = knee - f * (c.target_body.r["shin"] + 0.02)  # the hollow behind the knee
+    hip_h = c.body.hip_h - 0.02 * H
+    horiz = _hip_reach(c, hip_h, point[1])
+    origin = point - f * horiz - r * c.body.hip_w
+    origin = v(origin[0], 0, origin[2])
+    pose = PoseParams(pelvis=_pel(c, 0, -0.02, 0), pelvis_rot=(0, -14, 0), chest_rot=(0, 8, 0),
+                      look_at=_mount_local(c, origin, yaw, c.tw("head")))
+    pose.feet["l"] = Limb(v(-0.07 * H, c.body.ankle_h, 0.0), v(0, 0.2, 1))
+    pose.feet["r"] = _limb_world(c, origin, yaw, "r", point, (0, 1, 0.3), (0.35, -0.15, 1))
+    pose.hands["l"] = _hand(-0.1, 0.8, 0.14, H, (-0.5, -1, 0))
+    pose.hands["r"] = _hand(0.18, 0.66, -0.1, H, (0.5, -1, 0))
+    return ActionOut(pose, tags=["kicking", "low kick", "from behind", "sneak attack", "motion lines"],
+                     motion=v(0, -0.3, 1), impact=_mount_local(c, origin, yaw, point), mount=(origin, yaw))
+
+
+@action("knee_buckle", doc="The knee just got kicked out from behind: dropping toward one knee, off balance.")
+def knee_buckle(c: ActionCtx) -> ActionOut:
+    H = c.H
+    side = c.p("leg", "l")
+    sx = -1.0 if side == "l" else 1.0
+    pel = _pel(c, 0, -0.14, 0.02)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, -12, 8 * -sx), chest_rot=(0, -6, 0), head_rot=(0, -18, 0))
+    ah = c.body.ankle_h
+    pose.feet[side] = Limb(v(sx * 0.08 * H, ah + 0.07 * H, -0.2 * H), v(0, -0.6, 1), v(0, -0.5, -0.8))
+    other = "r" if side == "l" else "l"
+    pose.feet[other] = Limb(v(-sx * 0.09 * H, ah, 0.15 * H), v(0, 0.2, 1))
+    pose.hands["l"] = Limb(pel + v(-0.34, 0.42, -0.1) * H, v(-0.5, -0.5, -0.4))
+    pose.hands["r"] = Limb(pel + v(0.3, 0.5, 0.15) * H, v(0.5, -0.5, -0.4))
+    pose.fist = {"l": False, "r": False}
+    return ActionOut(pose, motion=v(0, -1, 0.2),
+                     tags=["falling", "off balance", "on one knee", "surprised", "pain", "open mouth", "flailing arms"])
+
+
+@action("spinning_back_kick", distance=lambda c: 0.62 * c.H, needs_pose=True,
+        doc="Turned-back high kick: back to the target, leg driving backward and up into the neck/head.")
+def spinning_back_kick(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return kick(c)
+    aim = c.tw({"head": "head", "neck": "neck", "chest": "chest"}.get(c.p("aim", "neck"), "neck"))
+    tpel = c.tw("pelvis")
+    # stay on the side the placement chose; turn the back to the target
+    if c.origin is not None and np.hypot(c.origin[0] - tpel[0], c.origin[2] - tpel[2]) > 0.05:
+        d = unit(v(c.origin[0] - tpel[0], 0, c.origin[2] - tpel[2]))
+    else:
+        d = c.t_fwd
+    yaw = _yaw(d)  # facing away from the target
+    f, r = _fwd_right(yaw)
+    origin = c.origin if c.origin is not None else v(tpel[0], 0, tpel[2]) + d * 0.5 * H
+    pose = PoseParams(pelvis=_pel(c, 0, -0.05, 0.05), pelvis_rot=(-10, 48, 10), chest_rot=(35, -12, 0),
+                      look_at=_mount_local(c, origin, yaw, c.tw("head")))
+    pose.feet["l"] = Limb(v(-0.06 * H, c.body.ankle_h, 0.1 * H), v(0, 0.2, 1))
+    goal = _mount_local(c, origin, yaw, aim - d * (c.target_body.r["neck"] + 0.02))
+    pose.feet["r"] = Limb(goal, v(0, -1, 0.1), v(0.2, -0.8, -0.5))
+    pose.hands["l"] = _hand(-0.12, 0.62, 0.3, H, (-0.5, -1, 0))
+    pose.hands["r"] = _hand(0.25, 0.55, 0.1, H, (0.5, -1, 0))
+    return ActionOut(pose, tags=["spinning kick", "back kick", "high kick", "kicking", "looking back",
+                                 "motion blur", "motion lines", "impact"],
+                     motion=v(0, 0.1, -1), impact=_mount_local(c, origin, yaw, aim), turn=yaw,
+                     reach=("r_ankle", goal))
+
+
+def _palm_distance(c: ActionCtx) -> float:
+    return _punch_distance(replace(c, params={**c.params, "aim": c.p("aim", "stomach")}))
+
+
+@action("palm_strike", distance=_palm_distance, needs_pose=True,
+        doc="Open palm driven into the target (default the stomach); style: energy (with an energy blast) | plain.")
+def palm_strike(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pel = _pel(c, 0, -0.1, 0.07)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(-24, 12, 0), chest_rot=(-14, 8, 0), look_at=c.tj("head"))
+    pose.feet = _feet(c, (-0.09, 0.22), (0.13, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
+    aim = c.aim("stomach")
+    r_t = c.target_body.r["waist"] if c.target_body else 0.09
+    toward = unit(v(aim[0], 0, aim[2]) - v(0, 0, 0))
+    wrist = aim - toward * (r_t + 0.035 * H) - v(0, 0.035 * H, 0)  # heel of the palm on the surface
+    pose.hands["r"] = Limb(wrist, v(1, -0.6, 0), toward * 0.3 + v(0, 1, 0))
+    pose.hands["l"] = _hand(-0.12, 0.66, 0.06, H, (-0.5, -1, 0))
+    pose.fist = {"l": True, "r": False}
+    energy = c.p("style", "energy") == "energy"
+    out = ActionOut(pose, tags=["palm strike", "open hand", "outstretched arm", "shouting"]
+                    + (["glowing hand", "energy"] if energy else []),
+                    motion=toward, impact=aim - toward * r_t, reach=("r_wrist", wrist))
+    if energy:
+        out.effect = c.p("effect", "energy blast, shockwave, glowing, light particles, blue energy, lens flare")
+    return out
+
+
+@action("doubled_over", doc="Just took a blow to the gut: folded around it, lifted onto the toes, mouth open.")
+def doubled_over(c: ActionCtx) -> ActionOut:
+    H = c.H
+    lift = c.p("lift", 0.03) * H
+    pel = _pel(c, 0, -0.03, -0.04) + v(0, lift, 0)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(0, 30, 0), chest_rot=(0, 30, 0), head_rot=(0, -6, 0),
+                      grounded=lift <= 0)
+    ah = c.body.ankle_h
+    pose.feet["l"] = Limb(v(-0.08 * H, ah + lift * 0.6, -0.14 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
+    pose.feet["r"] = Limb(v(0.08 * H, ah + lift * 0.9, -0.04 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
+    pose.hands["l"] = Limb(pel + v(-0.2, 0.18, 0.36) * H, v(-0.6, -0.3, -0.5))
+    pose.hands["r"] = Limb(pel + v(0.22, 0.22, 0.34) * H, v(0.6, -0.3, -0.5))
+    pose.fist = {"l": False, "r": False}
+    return ActionOut(pose, airborne=lift > 0, motion=v(0, 0.15, -1),
+                     tags=["doubled over", "stomach punch", "pain", "open mouth", "saliva", "wide-eyed",
+                           "constricted pupils", "motion lines"])
+
+
+@action("clutch_stomach", doc="Hunched over, both hands clutching the stomach after a nasty hit.")
+def clutch_stomach(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pel = _pel(c, 0, -0.08, -0.03)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(8, 22, 0), chest_rot=(0, 22, 0), head_rot=(0, 2, 0),
+                      look_at=c.tj("head") if c.target is not None else None)
+    pose.feet = _feet(c, (-0.09, 0.08), (0.1, -0.12), (0, 0.4, 1), (0.2, 0.4, 1))
+    J = c.rig.solve(pose)
+    belly = J["spine"] + unit(J["spine"] - J["pelvis"]) * 0.0 + v(0, -0.01, 0.07) * H
+    pose.hands["r"] = Limb(belly + v(0.05, 0.02, 0.02) * H, v(1, -0.3, -0.2), v(-1, -0.2, 0.2))
+    pose.hands["l"] = Limb(belly + v(-0.04, -0.03, 0.02) * H, v(-1, -0.3, -0.2), v(1, -0.2, 0.2))
+    pose.fist = {"l": False, "r": False}
+    return ActionOut(pose, tags=["hand on own stomach", "hunched over", "pain", "clenched teeth", "sweat", "tears",
+                                 "glaring"])
+
+
+@action("stumble", doc="Stumbling backwards off balance, legs crossing, arms windmilling.")
+def stumble(c: ActionCtx) -> ActionOut:
+    H = c.H
+    pel = _pel(c, 0.02, -0.05, -0.04)
+    pose = PoseParams(pelvis=pel, pelvis_rot=(12, -14, -12), chest_rot=(6, -10, -6), head_rot=(-10, -10, 8))
+    ah = c.body.ankle_h
+    pose.feet["l"] = Limb(v(0.04 * H, ah + 0.05 * H, -0.2 * H), v(0, 0.3, 1), v(0.2, -0.6, 0.7))
+    pose.feet["r"] = Limb(v(0.1 * H, ah, 0.08 * H), v(0.2, 0.2, 1))
+    pose.hands["l"] = Limb(pel + v(-0.4, 0.38, 0.06) * H, v(-0.3, -0.6, -1))
+    pose.hands["r"] = Limb(pel + v(0.34, 0.3, -0.14) * H, v(0.3, -0.6, -1))
+    pose.fist = {"l": False, "r": False}
+    return ActionOut(pose, motion=v(0, 0, -1),
+                     tags=["stumbling", "off balance", "flailing arms", "surprised", "open mouth"])
+
+
+@action("knee_strike", needs_pose=True,
+        doc="Clinch knee: hands pulling the target's head down while the right knee drives into the stomach.")
+def knee_strike(c: ActionCtx) -> ActionOut:
+    H = c.H
+    if c.target_world is None:
+        return kick(c)
+    spine, head = c.tw("spine"), c.tw("head")
+    yaw = _yaw(-c.t_fwd)
+    f, r = _fwd_right(yaw)
+    K = spine + c.t_fwd * (c.target_body.r["waist"] + 0.04)  # front of the target's stomach
+    hip_h = c.body.hip_h - 0.035 * H
+    dy = K[1] - hip_h
+    horiz = float(np.sqrt(max(c.body.thigh ** 2 - dy ** 2, (0.06 * H) ** 2)))
+    origin = K - f * horiz - r * c.body.hip_w
+    origin = v(origin[0], 0, origin[2])
+    hip = origin + v(0, hip_h, 0) + r * c.body.hip_w
+    knee = hip + unit(K - hip) * c.body.thigh
+    foot = knee + unit(v(0, -1, 0) - f * 0.7) * c.body.shin
+    pose = PoseParams(pelvis=_pel(c, 0, 0, 0), pelvis_rot=(0, -8, 0), chest_rot=(0, 14, 0),
+                      look_at=_mount_local(c, origin, yaw, head))
+    pose.feet["l"] = Limb(v(-0.07 * H, c.body.ankle_h, -0.05 * H), v(0, 0.2, 1))
+    pose.feet["r"] = _limb_world(c, origin, yaw, "r", foot, (0, 0.8, 1))
+    back = head - c.t_fwd * 0.07 + v(0, 0.03, 0)
+    pose.hands["r"] = _limb_world(c, origin, yaw, "r", back + r * 0.05, (1, -0.2, 0))
+    pose.hands["l"] = _limb_world(c, origin, yaw, "l", back - r * 0.05, (-1, -0.2, 0))
+    return ActionOut(pose, tags=["knee strike", "kneeing", "clinch", "grabbing another's head", "angry", "impact"],
+                     motion=v(0, 0.6, 0.8), impact=_mount_local(c, origin, yaw, K), mount=(origin, yaw))

@@ -69,9 +69,11 @@ def body_prims(actor: Actor, idx: int) -> list[Prim]:
         cap(f"{s}_hip", f"{s}_knee", R["thigh"], "leg")
         cap(f"{s}_knee", f"{s}_ankle", R["shin"], "leg")
         cap(f"{s}_ankle", f"{s}_toe", R["foot"], "foot")
+    # Blades are drawn thicker than life: a real 3 cm blade is 2-3 px in a wide shot, too thin for
+    # the depth ControlNet to register. Exaggerated, the weapon's line and crossing read clearly.
     for pom, grip, tip, wdt in actor.weapons:
-        P.append(Prim("cap", pom, grip, max(wdt, 0.016) * 1.1, idx, "weapon"))
-        P.append(Prim("cap", grip, tip, max(wdt, 0.014), idx, "weapon"))
+        P.append(Prim("cap", pom, grip, max(wdt * 1.2, 0.03), idx, "weapon"))
+        P.append(Prim("cap", grip, tip, max(wdt * 1.2, 0.034), idx, "weapon"))
     return P
 
 

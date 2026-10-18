@@ -31,6 +31,13 @@ def main(argv=None):
     st.add_argument("--render", action="store_true")
     st.add_argument("-q", "--quality", default="high", choices=["draft", "standard", "high"])
 
+    m = sub.add_parser("comic", help="render a multi-panel story file (shared cast, persistent injuries) to manga pages")
+    m.add_argument("story")
+    m.add_argument("-o", "--out", default="out/comic")
+    m.add_argument("-q", "--quality", default="high", choices=["draft", "standard", "high"])
+    m.add_argument("--panels", default=None, help="comma-separated panel ids to (re)render")
+    m.add_argument("--models", default=None)
+
     c = sub.add_parser("character", help="design a character on the fly and save it to the cast")
     c.add_argument("name")
     c.add_argument("description", nargs="?", default="")
@@ -39,6 +46,13 @@ def main(argv=None):
 
     a = ap.parse_args(argv)
     cast = Cast(a.cast)
+
+    if a.cmd == "comic":
+        from .diffusion import Engine
+        from .story import run_story
+        engine = Engine(a.models) if a.models else Engine()
+        run_story(a.story, engine, a.out, a.quality, only=a.panels.split(",") if a.panels else None)
+        return
 
     if a.cmd == "character":
         ch = design(a.name, seed=a.seed, archetype=a.archetype, description=a.description,

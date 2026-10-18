@@ -80,6 +80,8 @@ class Character:
     palette: str = "crimson"
     extra: str = ""  # any additional tags (LoRA trigger words, scars, ...)
     lora: list = field(default_factory=list)  # [{"path": ..., "scale": 0.8, "trigger": "..."}]
+    sheet: str = ""  # path of the generated turnaround sheet (identity reference)
+    injuries: list = field(default_factory=list)  # persistent wounds, see injuries.py
 
     @property
     def body(self) -> Body:

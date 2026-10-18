@@ -16,10 +16,14 @@ from .rig import PoseParams, Rig
 from .vec import frame_from, unit, v
 from .weapons import get_weapon
 
-REACTIONS = {"knocked_back", "staggered", "dodge", "fallen", "kneel"}
+REACTIONS = {"knocked_back", "staggered", "dodge", "fallen", "kneel", "headlocked", "choked", "leg_locked",
+             "knee_buckle", "doubled_over", "clutch_stomach", "stumble"}
 # reactions whose body is moved so the attacker's blow actually lands on it
-HIT_REACTIONS = {"knocked_back", "staggered"}
-ATTACKS = {"slash", "thrust", "leap_attack", "punch", "kick", "flying_kick", "charge"}
+HIT_REACTIONS = {"knocked_back", "staggered", "knee_buckle", "doubled_over", "stumble"}
+# attackers that hold on to the victim's actual (reacting) body rather than its pre-hit stance
+HOLDS = {"headlock", "rear_choke", "leg_lock", "knee_strike"}
+ATTACKS = {"slash", "thrust", "leap_attack", "punch", "kick", "flying_kick", "charge", "palm_strike",
+           "spinning_back_kick", "back_knee_kick", "knee_strike", "headlock", "rear_choke", "leg_lock"}
 
 
 @dataclass
@@ -42,6 +46,8 @@ class Actor:
     weapons: list = field(default_factory=list)  # [(pommel, grip, tip, half_width)]
     auto_placed: bool = False
     anchor: np.ndarray = None  # where the placement put the actor (before hit alignment)
+    mounted: bool = False  # placed by its action relative to the target's body
+    turned: bool = False  # its action chose its facing
 
     @property
     def name(self):
@@ -117,7 +123,7 @@ class Stage:
     def _ctx(self, a: Actor, with_pose=True) -> ActionCtx:
         rig = Rig(a.char.body)
         ctx = ActionCtx(body=a.char.body, rig=rig, weapon=get_weapon(a.char.weapon), params=a.params,
-                        altitude=a.altitude)
+                        altitude=a.altitude, origin=a.origin)
         if a.target:
             t = self.by[a.target]
             ctx.target_body = t.char.body
@@ -128,6 +134,10 @@ class Stage:
             if with_pose and t.joints is not None and a.origin is not None:
                 joints = self._proxy(t, a) if self._is_hit_victim(t, a) else t.joints
                 ctx.target = {k: a.to_local(p) for k, p in joints.items()}
+                ctx.target_world = joints
+                ctx.target_yaw = t.yaw
+                ctx.target_origin = t.anchor if t.anchor is not None else t.origin
+                ctx.to_local = a.to_local
                 if t.weapons:
                     pom, grip, tip, _ = t.weapons[0]
                     ctx.target_weapon = (a.to_local(grip), a.to_local(tip))
@@ -135,13 +145,14 @@ class Stage:
 
     @staticmethod
     def _is_hit_victim(t: Actor, attacker: Actor) -> bool:
-        return t.action in HIT_REACTIONS and attacker.target == t.name and attacker.action not in REACTIONS
+        return (t.action in HIT_REACTIONS and attacker.target == t.name and attacker.action not in REACTIONS
+                and attacker.action not in HOLDS)
 
     def _proxy(self, t: Actor, attacker: Actor) -> dict:
         """The victim standing (pre-hit) where it was struck, facing the attacker."""
         rig = Rig(t.char.body)
         local = rig.solve(PoseParams())
-        yaw = _yaw_to(t.anchor, attacker.origin)
+        yaw = t.yaw  # its facing (toward the attacker unless the scene turned it away)
         F = frame_from(v(np.sin(yaw), 0, np.cos(yaw)))
         base = v(t.anchor[0], 0, t.anchor[2])
         return {k: base + F @ p for k, p in local.items()}
@@ -149,7 +160,8 @@ class Stage:
     def _step_in(self):
         """Auto-placed strikers whose blow falls short (or overshoots) shift along their facing."""
         for a in self.actors:
-            if not a.auto_placed or a.out is None or a.out.reach is None or a.distance is not None:
+            if (not a.auto_placed or a.mounted or a.out is None or a.out.reach is None
+                    or a.distance is not None):
                 continue
             joint, goal = a.out.reach
             miss = a.F @ (goal - a.local[joint])
@@ -166,7 +178,7 @@ class Stage:
             if t.action not in HIT_REACTIONS or t.joints is None:
                 continue
             att = next((a for a in self.actors if a.target == t.name and a.out is not None
-                        and a.out.impact is not None and a.action not in REACTIONS), None)
+                        and a.out.impact is not None and a.action not in REACTIONS and not a.mounted), None)
             if att is None:
                 continue
             impact = att.to_world(att.out.impact)
@@ -272,6 +284,8 @@ class Stage:
     def _face(self):
         c = np.mean([a.origin for a in self.actors], axis=0)
         for a in self.actors:
+            if a.mounted or a.turned:
+                continue
             if isinstance(a.facing, (int, float)):
                 a.yaw = np.deg2rad(a.facing)
             elif isinstance(a.facing, str):
@@ -286,6 +300,23 @@ class Stage:
     def _pose(self, a: Actor, with_pose=True):
         ctx = self._ctx(a, with_pose)
         out = ACTIONS[a.action](ctx)
+        if out.mount is not None and a.at is None:
+            for _ in range(3):  # the action placed itself on the target's body: re-pose there
+                origin, yaw = out.mount
+                moved = np.linalg.norm(v(origin[0], 0, origin[2]) - a.origin) + abs(yaw - a.yaw)
+                a.origin = v(origin[0], 0, origin[2])
+                a.anchor = a.origin.copy()
+                a.yaw = yaw
+                a.mounted = True
+                ctx = self._ctx(a, with_pose)
+                out = ACTIONS[a.action](ctx)
+                if moved < 1e-3:
+                    break
+        if out.turn is not None and abs(out.turn - a.yaw) > 1e-4:
+            a.yaw = out.turn
+            a.turned = True
+            ctx = self._ctx(a, with_pose)
+            out = ACTIONS[a.action](ctx)
         rig = ctx.rig
         b = a.char.body
         # Grounding moves the pelvis, then the limbs are re-solved so hand targets stay exact.

@@ -55,7 +55,7 @@ class RegionState:
         return m
 
 
-def _attend(attn, hidden, ctx):
+def _attend(attn, hidden, ctx, bias=None):
     q = attn.to_q(hidden)
     k = attn.to_k(ctx)
     val = attn.to_v(ctx)
@@ -66,7 +66,7 @@ def _attend(attn, hidden, ctx):
     val = val.view(val.shape[0], -1, attn.heads, hd).transpose(1, 2)
     if k.shape[0] != B:
         k, val = k.expand(B, -1, -1, -1), val.expand(B, -1, -1, -1)
-    o = F.scaled_dot_product_attention(q, k, val)
+    o = F.scaled_dot_product_attention(q, k, val, attn_mask=bias)
     o = o.transpose(1, 2).reshape(B, N, attn.heads * hd).to(q.dtype)
     o = attn.to_out[0](o)
     return attn.to_out[1](o)
@@ -99,6 +99,83 @@ class RegionalCrossAttn:
         return torch.cat([out[:half], mix], 0)
 
 
+# ------------------------------------------------------------------ reference attention
+@dataclass
+class Reference:
+    """A character identity anchor: its sheet image, its prompt, and where it applies."""
+    image: Image.Image
+    prompt: str
+    mask: np.ndarray | None = None  # HxW in output pixels; None = whole image
+    weight: float = 1.0
+
+
+@dataclass
+class RefState:
+    mode: str = "off"  # off | write | read
+    banks: list = field(default_factory=list)  # per reference: {layer: (1, N_r, C)}
+    current: int = 0
+    masks: torch.Tensor | None = None  # (R, h, w) latent-resolution; rows of ones = everywhere
+    weights: list = field(default_factory=list)
+    style_fidelity: float = 0.5
+    cache: dict = field(default_factory=dict)
+
+    def bias(self, n_tokens: int, ref_lens: list, dtype) -> torch.Tensor:
+        """Additive attention bias (N, N + sum(ref_lens)): each pixel may attend to its own
+        character's reference tokens only (log-weighted), never to another character's."""
+        key = (n_tokens, tuple(ref_lens))
+        if key in self.cache:
+            return self.cache[key]
+        R, h, w = self.masks.shape
+        for k in range(6):
+            hh, ww = math.ceil(h / 2 ** k), math.ceil(w / 2 ** k)
+            if hh * ww == n_tokens:
+                break
+        else:
+            raise RuntimeError(f"cannot map {n_tokens} tokens to latent {h}x{w}")
+        m = F.interpolate(self.masks[None].float(), size=(hh, ww), mode="area")[0].reshape(R, -1)
+        cols = [torch.zeros(n_tokens, n_tokens)]
+        for r, L in enumerate(ref_lens):
+            wgt = torch.clamp(m[r] * self.weights[r], min=1e-6).log()
+            wgt[m[r] < 0.05] = float("-inf")
+            cols.append(wgt[:, None].expand(n_tokens, L))
+        b = torch.cat(cols, 1).to(dtype)
+        self.cache[key] = b
+        return b
+
+
+class RefSelfAttn:
+    """Self-attention that, in "write" mode, records a reference image's features and, in "read"
+    mode, lets each pixel also attend to the features of its own character's reference sheet."""
+
+    def __init__(self, state: RefState, name: str):
+        self.state, self.name = state, name
+
+    def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None, temb=None, **kw):
+        st = self.state
+        if st.mode == "write":
+            st.banks[st.current][self.name] = hidden_states.detach()
+            return _attend(attn, hidden_states, hidden_states)
+        if st.mode != "read" or not st.banks:
+            return _attend(attn, hidden_states, hidden_states)
+        B, N, _ = hidden_states.shape
+        refs = [b[self.name].to(hidden_states.dtype) for b in st.banks]
+        ctx = torch.cat([hidden_states] + [r.expand(B, -1, -1) for r in refs], 1)
+        bias = st.bias(N, [r.shape[1] for r in refs], hidden_states.dtype)
+        out = _attend(attn, hidden_states, ctx, bias)
+        if B >= 2 and st.style_fidelity > 0:  # uncond half: partly plain, keeps the CFG contrast
+            half = B // 2
+            plain = _attend(attn, hidden_states[:half], hidden_states[:half])
+            out = torch.cat([st.style_fidelity * plain + (1 - st.style_fidelity) * out[:half], out[half:]])
+        return out
+
+
+def _fit_area(size, area):
+    """Scale (w, h) to about `area` pixels, multiples of 64."""
+    w, h = size
+    k = math.sqrt(area / (w * h))
+    return max(64, int(round(w * k / 64)) * 64), max(64, int(round(h * k / 64)) * 64)
+
+
 # ------------------------------------------------------------------ engine
 class Engine:
     def __init__(self, models: str = DEFAULT_MODELS, dtype=torch.bfloat16, threads: int | None = None):
@@ -126,9 +203,15 @@ class Engine:
             if os.path.isdir(cn_dir) else None
         self.sched_config = DPMSolverMultistepScheduler.load_config(base, subfolder="scheduler")
         self.region = RegionState()
+        self.ref = RefState()
         procs = {}
         for name, proc in self.unet.attn_processors.items():
-            procs[name] = RegionalCrossAttn(self.region) if name.endswith("attn2.processor") else proc
+            if name.endswith("attn2.processor"):
+                procs[name] = RegionalCrossAttn(self.region)
+            elif name.endswith("attn1.processor"):
+                procs[name] = RefSelfAttn(self.ref, name)
+            else:
+                procs[name] = proc
         self.unet.set_attn_processor(procs)
         self.loaded_loras: dict = {}
         print(f"[engine] loaded in {time.time() - t0:.0f}s", flush=True)
@@ -194,10 +277,12 @@ class Engine:
                seed: int = 0, controls: dict | None = None, control_end: float = 0.75,
                regions: list[tuple[str, np.ndarray]] | None = None, base_weight: float = 0.3,
                init_image: Image.Image | None = None, strength: float = 1.0,
-               inpaint_mask: np.ndarray | None = None, progress: str = "") -> Image.Image:
+               inpaint_mask: np.ndarray | None = None, references: list | None = None,
+               style_fidelity: float = 0.5, progress: str = "") -> Image.Image:
         """controls: {"openpose": (PIL, scale), "depth": (PIL, scale), ...}
         regions: [(prompt, mask HxW float)] - masks need not sum to 1; leftover -> base prompt only.
-        inpaint_mask: HxW float, 1 = regenerate (only with init_image)."""
+        inpaint_mask: HxW float, 1 = regenerate (only with init_image).
+        references: [Reference] identity anchors (character sheets), each restricted to its mask."""
         from diffusers import DPMSolverMultistepScheduler
 
         sched = DPMSolverMultistepScheduler.from_config(self.sched_config, use_karras_sigmas=True,
@@ -250,6 +335,28 @@ class Engine:
             cn_in = dict(controlnet_cond=imgs, control_type=ctype[None].repeat(2, 1).to(self.dtype),
                          control_type_idx=modes, conditioning_scale=scales)
 
+        # references: encode once; every step they are re-noised to t and run through the UNet
+        refs = []
+        rs = self.ref
+        rs.cache.clear()
+        rs.banks, rs.mode = [], "off"
+        if references:
+            ms = []
+            for ref in references:
+                rw, rh = _fit_area(ref.image.size, 0.62e6)
+                rlat = self.encode_image(ref.image.convert("RGB").resize((rw, rh), Image.LANCZOS))
+                remb, rpool, _ = self.encode(ref.prompt)
+                rids = torch.tensor([[rh, rw, 0, 0, rh, rw]], dtype=self.dtype)
+                refs.append((rlat, torch.randn(rlat.shape, generator=g), remb.to(self.dtype),
+                             {"text_embeds": rpool.to(self.dtype), "time_ids": rids}))
+                m = np.ones((height, width), np.float32) if ref.mask is None else ref.mask.astype(np.float32)
+                ms.append(np.asarray(Image.fromarray((np.clip(m, 0, 1) * 255).astype(np.uint8))
+                                     .resize((w8, h8), Image.BILINEAR), np.float32) / 255)
+                rs.banks.append({})
+            rs.masks = torch.from_numpy(np.stack(ms))
+            rs.weights = [r.weight for r in references]
+            rs.style_fidelity = style_fidelity
+
         # latents
         noise = torch.randn((1, 4, h8, w8), generator=g)
         if init_image is not None:
@@ -266,6 +373,16 @@ class Engine:
         t0 = time.time()
         total = len(timesteps)
         for i, t in enumerate(timesteps):
+            if refs:
+                st.active, was = False, st.active
+                rs.mode = "write"
+                for ri, (rlat, rnoise, remb, radd) in enumerate(refs):
+                    rs.current = ri
+                    rx = sched.add_noise(rlat, rnoise, t.reshape(1))
+                    rx = sched.scale_model_input(rx, t).to(self.dtype)
+                    self.unet(rx, t, encoder_hidden_states=remb, added_cond_kwargs=radd, return_dict=False)
+                rs.mode = "read"
+                st.active = was
             x = torch.cat([lat, lat])
             x = sched.scale_model_input(x, t).to(self.dtype)
             kw = {}
@@ -291,4 +408,5 @@ class Engine:
                   end="", flush=True)
         print(flush=True)
         st.active = False
+        rs.mode, rs.banks = "off", []
         return self.decode(lat)
