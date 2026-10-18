@@ -191,11 +191,11 @@ class Stage:
             delta = goal - t.joints[part]
             if t.action != "knocked_back" or t.out is None or not t.out.airborne:
                 delta[1] = 0.0
-            # a blow never pulls its victim toward the attacker
+            # a blow never drags its victim toward the attacker (beyond undoing its own recoil lean)
             flat = unit(v(motion[0], 0, motion[2]))
             back = delta @ flat
-            if back < 0:
-                delta = delta - flat * back
+            if back < -0.3:
+                delta = delta - flat * (back + 0.3)
             # keep flying along the blow until the bodies no longer pass through each other
             step = unit(v(motion[0], 0, motion[2])) * 0.05
             tol = -0.06 if t.action == "doubled_over" else 0.0  # a folded body may lean onto its attacker

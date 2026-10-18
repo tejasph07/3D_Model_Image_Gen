@@ -64,7 +64,7 @@ def test_spinning_back_kick_turns_its_back_and_reaches_the_neck():
     assert np.linalg.norm(a.joints["r_ankle"] - v.joints["neck"]) < 0.45
     assert a.joints["r_ankle"][1] > 1.0  # it's a high kick
     gap = np.hypot(*(a.joints["pelvis"] - v.joints["pelvis"])[[0, 2]])
-    assert gap > 0.35  # bodies don't overlap
+    assert gap > a.char.body.r["pelvis"] + v.char.body.r["pelvis"]  # bodies don't overlap
 
 
 def test_palm_strike_lands_on_the_stomach_and_folds_the_victim():
