@@ -4,3 +4,4 @@ cast.json
 __pycache__/
 *.pyc
 .pytest_cache/
+render3d/node_modules/

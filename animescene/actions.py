@@ -898,8 +898,9 @@ def doubled_over(c: ActionCtx) -> ActionOut:
     ah = c.body.ankle_h
     pose.feet["l"] = Limb(v(-0.08 * H, ah + lift * 0.6, -0.14 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
     pose.feet["r"] = Limb(v(0.08 * H, ah + lift * 0.9, -0.04 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
-    pose.hands["l"] = Limb(pel + v(-0.2, 0.18, 0.36) * H, v(-0.6, -0.3, -0.5))
-    pose.hands["r"] = Limb(pel + v(0.22, 0.22, 0.34) * H, v(0.6, -0.3, -0.5))
+    # arms fold in around the blow (one hand going to the gut, the other flung low and forward)
+    pose.hands["l"] = Limb(pel + v(-0.14, 0.1, 0.22) * H, v(-0.6, -0.3, -0.5))
+    pose.hands["r"] = Limb(pel + v(0.2, 0.02, 0.2) * H, v(0.6, -0.3, -0.5))
     pose.fist = {"l": False, "r": False}
     return ActionOut(pose, airborne=lift > 0, motion=v(0, 0.15, -1),
                      tags=["doubled over", "stomach punch", "pain", "open mouth", "saliva", "wide-eyed",
@@ -930,8 +931,8 @@ def stumble(c: ActionCtx) -> ActionOut:
     ah = c.body.ankle_h
     pose.feet["l"] = Limb(v(0.04 * H, ah + 0.05 * H, -0.2 * H), v(0, 0.3, 1), v(0.2, -0.6, 0.7))
     pose.feet["r"] = Limb(v(0.1 * H, ah, 0.08 * H), v(0.2, 0.2, 1))
-    pose.hands["l"] = Limb(pel + v(-0.4, 0.38, 0.06) * H, v(-0.3, -0.6, -1))
-    pose.hands["r"] = Limb(pel + v(0.34, 0.3, -0.14) * H, v(0.3, -0.6, -1))
+    pose.hands["l"] = Limb(pel + v(-0.42, 0.22, 0.04) * H, v(-0.3, -0.6, -1))
+    pose.hands["r"] = Limb(pel + v(0.38, 0.14, -0.12) * H, v(0.3, -0.6, -1))
     pose.fist = {"l": False, "r": False}
     return ActionOut(pose, motion=v(0, 0, -1),
                      tags=["stumbling", "off balance", "flailing arms", "surprised", "open mouth"])

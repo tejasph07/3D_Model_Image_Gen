@@ -81,10 +81,15 @@ class Character:
     extra: str = ""  # any additional tags (LoRA trigger words, scars, ...)
     lora: list = field(default_factory=list)  # [{"path": ..., "scale": 0.8, "trigger": "..."}]
     sheet: str = ""  # path of the generated turnaround sheet (identity reference)
+    model: str = ""  # VRM model (library name or path): the character's actual 3D body
+    scale: float = 1.0  # uniform size of the model (1.15 = a bigger bruiser)
     injuries: list = field(default_factory=list)  # persistent wounds, see injuries.py
 
     @property
     def body(self) -> Body:
+        if self.model:  # pose the real mesh: bone lengths come from the model itself
+            from .vrm import model_info
+            return model_info(self.model).body(build=self.build, gender=self.gender).scaled(self.scale)
         return Body(height=self.height, build=self.build, gender=self.gender)
 
     @property
@@ -200,6 +205,9 @@ def design(name: str, seed: int | None = None, archetype: str | None = None, des
         palette=palette,
         extra=traits.get("extra", ""),
     )
+    for k, val in overrides.items():  # explicit fields always win (model, lora, height, ...)
+        if val is not None and k in Character.__dataclass_fields__ and k != "name":
+            setattr(c, k, val)
     return c
 
 

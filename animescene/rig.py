@@ -68,6 +68,16 @@ class Body:
             "foot": 0.022 * H * k,
         }
 
+    def scaled(self, k: float) -> "Body":
+        """The same body uniformly scaled (a model shown bigger or smaller than authored)."""
+        import copy
+        b = copy.copy(self)
+        for name in ("height", "hip_h", "hip_w", "thigh", "shin", "ankle_h", "foot", "spine", "upper", "neck",
+                     "head_r", "shoulder_w", "upper_arm", "forearm", "hand"):
+            setattr(b, name, getattr(self, name) * k)
+        b.r = {key: val * k for key, val in self.r.items()}
+        return b
+
     @property
     def arm_reach(self) -> float:
         return self.upper_arm + self.forearm

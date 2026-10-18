@@ -37,6 +37,8 @@ def main(argv=None):
     m.add_argument("-q", "--quality", default="high", choices=["draft", "standard", "high"])
     m.add_argument("--panels", default=None, help="comma-separated panel ids to (re)render")
     m.add_argument("--models", default=None)
+    m.add_argument("--mode", default="3d", choices=["3d", "diffusion"],
+                   help="3d: VRM models rendered directly (fast); diffusion: SDXL generation")
 
     c = sub.add_parser("character", help="design a character on the fly and save it to the cast")
     c.add_argument("name")
@@ -48,10 +50,15 @@ def main(argv=None):
     cast = Cast(a.cast)
 
     if a.cmd == "comic":
+        only = a.panels.split(",") if a.panels else None
+        if a.mode == "3d":
+            from .story import run_story3d
+            run_story3d(a.story, a.out, only=only)
+            return
         from .diffusion import Engine
         from .story import run_story
         engine = Engine(a.models) if a.models else Engine()
-        run_story(a.story, engine, a.out, a.quality, only=a.panels.split(",") if a.panels else None)
+        run_story(a.story, engine, a.out, a.quality, only=only)
         return
 
     if a.cmd == "character":

@@ -251,3 +251,75 @@ def detail_pass(engine, st: Staged, pr: dict, img: Image.Image, q: Quality, seed
         img = Image.fromarray(base.clip(0, 255).astype(np.uint8))
         img.save(out / f"detail_{i}_{a.name}.png")
     return img
+
+
+def generate3d(spec, out_dir: str | Path, cast: Cast | None = None, log=print, render: bool = True) -> dict:
+    """Full-3D panel: stage -> VRM models posed and toon-rendered -> code-drawn wounds. No diffusion.
+
+    Returns the job (so a story can batch every panel into one renderer session) unless render=True."""
+    from .raster import export_stage
+    from .render3d import build_job, render_jobs
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    st: Staged = stage_scene(spec, cast)
+    st.debug.save(out / "stage_debug.png")
+    st.pose.save(out / "control_pose.png")
+    st.depth.save(out / "control_depth.png")
+    (out / "stage3d.json").write_text(json.dumps(export_stage(st.scene, st.cam)))
+    job = build_job(st, out / "render3d.png")
+    finish = lambda: finish3d(st, out)  # noqa: E731
+    if render:
+        render_jobs([job], log=log)
+        return finish()
+    return {"job": job, "finish": finish}
+
+
+def finish3d(st: Staged, out: Path) -> dict:
+    img = Image.open(out / "render3d.png").convert("RGB")
+    img = draw_injuries(st, img)
+    img.save(out / "final.png")
+    (out / "meta.json").write_text(json.dumps(panel_meta(st, img.size), indent=2))
+    return {"final": str(out / "final.png")}
+
+
+def id_masks(ids_png: str | Path, n: int) -> np.ndarray:
+    """Per-actor masks from the renderer's flat-colour ID pass (actor i = hsl(i*67, 100%, 50%))."""
+    import colorsys
+    arr = np.asarray(Image.open(ids_png).convert("RGB")).astype(np.float32)
+    masks = []
+    for i in range(n):
+        r, g, b = colorsys.hls_to_rgb(((i * 67) % 360) / 360, 0.5, 1.0)
+        d = np.abs(arr - np.array([r, g, b]) * 255).sum(-1)
+        masks.append((d < 60).astype(np.float32))
+    return np.stack(masks)
+
+
+def refine3d(engine, panel_dir: str | Path, spec, cast: Cast | None = None, strength: float = 0.42,
+             steps: int = 28, seed: int = 0, tag: str = "", log=print) -> Path:
+    """img2img over a 3D panel: the render fixes every position, the model only repaints surfaces.
+
+    Constraints: ControlNet-Union with the meshes' own depth + line art traced from the render,
+    per-character regional prompts restricted to each character's exact silhouette."""
+    pd = Path(panel_dir)
+    st: Staged = stage_scene(spec, cast)
+    pr = P.build(st)
+    src = Image.open(pd / "final.png").convert("RGB")
+    W, H = src.size
+    gray = cv2.cvtColor(np.asarray(src), cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(cv2.GaussianBlur(gray, (3, 3), 0), 60, 140)
+    lineart = Image.fromarray(edges).convert("RGB")
+    lineart.save(pd / "control_lineart.png")
+    masks = id_masks(pd / "render3d_ids.png", len(st.scene.actors))
+    grown = np.stack([cv2.GaussianBlur(cv2.dilate(m, np.ones((9, 9), np.uint8)), (0, 0), 3) for m in masks])
+    grown = grown / np.maximum(1, grown.sum(0))[None]
+    bg = np.clip(1 - grown.sum(0), 0, 1)
+    regions = [(p, m) for p, m in zip(pr["regions"], grown)] + [(pr["background"], bg)]
+    controls = {"depth": (Image.open(pd / "render3d_depth.png").convert("RGB"), 0.6), "lineart": (lineart, 0.55)}
+    glob = P._join(pr["global"], "anime coloring, cel shading, detailed eyes, clean lineart")
+    img = engine.sample(glob, P._join(pr["negative"], "3d, render, cgi, doll, plastic"), W, H, steps=steps, cfg=6.0,
+                        seed=seed, controls=controls, control_end=0.85, regions=regions, base_weight=0.3,
+                        init_image=src, strength=strength, progress=f"refine {pd.name}")
+    out = pd / f"refined{tag}.png"
+    img = draw_injuries(st, img)
+    img.save(out)
+    return out

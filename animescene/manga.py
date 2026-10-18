@@ -56,10 +56,12 @@ def _crop(img: Image.Image, meta: dict, aspect: float) -> tuple[Image.Image, tup
         cw, ch = W, int(W / aspect)
     x0s, y0s, x1s, y1s = meta.get("subjects", [0, 0, W, H])
     cx = (x0s + x1s) / 2
-    heads = [a["head"][1] for a in meta.get("actors", {}).values()]
-    cy = (min(heads) + (y1s)) / 2 if heads else (y0s + y1s) / 2
+    tops = [a["head_top"][1] - 0.6 * a.get("head_r_px", 20) for a in meta.get("actors", {}).values()]
+    cy = (y0s + y1s) / 2
     x0 = int(min(max(cx - cw / 2, 0), W - cw))
     y0 = int(min(max(cy - ch / 2, 0), H - ch))
+    if tops:  # never cut a head: if heads stick out of the window, slide it up (feet go first)
+        y0 = int(max(0, min(y0, min(tops) - 0.04 * ch)))
     return img.crop((x0, y0, x0 + cw, y0 + ch)), (x0, y0, cw / W)
 
 

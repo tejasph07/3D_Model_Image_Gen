@@ -64,6 +64,38 @@ def panel_spec(story: dict, panel: dict) -> dict:
     return spec
 
 
+def run_story3d(path, out_dir, only: list | None = None, log=print) -> list:
+    """Render a whole story with the 3D models only (seconds per panel), then lay out the pages."""
+    from .characters import Cast
+    from .manga import compose_pages
+    from .pipeline import generate3d
+    from .render3d import render_jobs
+
+    story = json.loads(Path(path).read_text())
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    cast = Cast(out / "cast.json")
+    used = [c.palette for c in cast.chars.values()]
+    for cs in story.get("cast", []):
+        if cs["name"] not in cast.chars:
+            used.append(cast.resolve(cs, used).palette)
+    cast.save()
+    pending, results = [], []
+    for panel in story["panels"]:
+        pdir = out / panel["id"]
+        results.append((panel, pdir))
+        if only and panel["id"] not in only:
+            continue
+        pending.append(generate3d(panel_spec(story, panel), pdir, cast=cast, log=log, render=False))
+    if pending:
+        render_jobs([p["job"] for p in pending], log=log)
+        for p in pending:
+            p["finish"]()
+    pages = compose_pages(story, [(p, d) for p, d in results if (d / "final.png").exists()], out)
+    log(f"[story] pages: {', '.join(str(p) for p in pages)}")
+    return pages
+
+
 def run_story(path, engine, out_dir, quality="high", only: list | None = None, log=print) -> list:
     """Render every panel in order with one shared cast (designs, sheets and injuries persist),
     then lay the panels out as manga pages."""
