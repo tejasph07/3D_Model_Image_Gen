@@ -123,12 +123,13 @@
       "caption": "Goro charges first.",
       "camera": {
         "shot": "closeup",
-        "azimuth": 70,
+        "azimuth": 20,
         "focus": [
           "Rin.upper",
           "Goro.upper",
           "impact"
-        ]
+        ],
+        "margin": 0.05
       },
       "characters": [
         {
@@ -150,7 +151,8 @@
           "name": "Rin",
           "action": "palm_strike",
           "style": "energy",
-          "target": "Goro"
+          "target": "Goro",
+          "bearing": -50
         }
       ],
       "sfx": [
@@ -169,7 +171,8 @@
         "focus": [
           "Rin.upper",
           "Kaito.upper"
-        ]
+        ],
+        "margin": 0.05
       },
       "characters": [
         {
@@ -191,7 +194,8 @@
           "name": "Kaito",
           "action": "punch",
           "aim": "face",
-          "target": "Rin"
+          "target": "Rin",
+          "bearing": 45
         }
       ],
       "sfx": [
