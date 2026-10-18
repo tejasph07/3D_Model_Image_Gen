@@ -32,11 +32,12 @@ class Quality:
     detail_size: int = 1024
     color_init: float = 0.0  # >0: start the base pass from the 3D colour-block render at this strength
     references: bool = True  # identity via each character's turnaround sheet (reference attention)
+    candidates: int = 2  # base passes to sample; the one that best matches the sheets is kept
     ref_weight: float = 2.2
 
 
 PRESETS = {
-    "draft": Quality(steps=18, hires=0, detail=False),
+    "draft": Quality(steps=18, hires=0, detail=False, candidates=1),
     "standard": Quality(hires=0, detail=True),
     "high": Quality(),
 }
@@ -94,10 +95,19 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
         engine.set_loras(loras)
 
     controls = {"openpose": (st.pose, q.pose_scale), "depth": (st.depth, q.depth_scale)}
-    img = engine.sample(pr["global"], pr["negative"], W, H, steps=q.steps, cfg=q.cfg, seed=seed,
-                        controls=controls, control_end=q.control_end, regions=regions,
-                        base_weight=q.base_weight, progress="base", references=refs,
-                        **({"init_image": st.colors, "strength": q.color_init} if q.color_init > 0 else {}))
+    sheets_img = {r.prompt: r.image for r in refs}
+    best, best_score = None, -1.0
+    for k in range(max(1, q.candidates)):
+        cand = engine.sample(pr["global"], pr["negative"], W, H, steps=q.steps, cfg=q.cfg, seed=seed + 1000 * k,
+                             controls=controls, control_end=q.control_end, regions=regions,
+                             base_weight=q.base_weight, progress=f"base {k + 1}/{q.candidates}", references=refs,
+                             **({"init_image": st.colors, "strength": q.color_init} if q.color_init > 0 else {}))
+        score = identity_score(cand, st, [r.image for r in refs]) if refs else 0.0
+        cand.save(out / f"base_{k}.png")
+        log(f"[base] candidate {k}: identity score {score:.3f}")
+        if score > best_score:
+            best, best_score = cand, score
+    img = best
     img.save(out / "base.png")
 
     if q.hires and q.hires > 1.01:
@@ -120,6 +130,35 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
     (out / "meta.json").write_text(json.dumps(panel_meta(st, img.size), indent=2))
     log(f"[done] {out / 'final.png'} in {time.time() - t0:.0f}s")
     return {"final": str(out / "final.png"), "prompts": pr}
+
+
+def _hist(pixels: np.ndarray) -> np.ndarray:
+    """Hue/saturation/value histogram of RGB pixels (n, 3) uint8, normalised."""
+    if len(pixels) == 0:
+        return np.zeros(12 * 4 * 4)
+    hsv = cv2.cvtColor(pixels.reshape(-1, 1, 3).astype(np.uint8), cv2.COLOR_RGB2HSV).reshape(-1, 3)
+    h, _ = np.histogramdd(hsv.astype(float), bins=(12, 4, 4), range=((0, 180), (0, 256), (0, 256)))
+    h = h.ravel()
+    return h / max(h.sum(), 1)
+
+
+def identity_score(img: Image.Image, st: Staged, sheets: list) -> float:
+    """How well each character's region matches the colours of its own sheet (histogram
+    intersection, averaged over characters). Cheap, but it catches swapped or lost designs."""
+    arr = np.asarray(img.resize(st.size))
+    scores = []
+    for i, sheet in enumerate(sheets):
+        body = (st.frame.ids == i) | (st.masks[i] > 0.85)
+        if body.sum() < 200:
+            continue
+        s = np.asarray(sheet.convert("RGB").resize((608, 416)))
+        bgc = np.median(np.concatenate([s[:8].reshape(-1, 3), s[-8:].reshape(-1, 3)]), axis=0)
+        fg = np.abs(s.astype(int) - bgc).sum(-1) > 40  # character pixels on the plain sheet
+        scores.append(np.minimum(_hist(arr[body]), _hist(s[fg])).sum())
+    if not scores:
+        return 0.0
+    # one lost identity ruins a panel: weigh the worst-matching character as much as the average
+    return float(0.5 * np.mean(scores) + 0.5 * np.min(scores))
 
 
 def effect_regions(st: Staged) -> list:

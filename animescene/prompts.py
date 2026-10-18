@@ -70,7 +70,7 @@ def build(staged) -> dict:
     effects = []
     fighting = False
     for a in scene.actors:
-        effects += [t for t in a.out.tags if t in EFFECTS]
+        effects += [t for t in a.out.tags if t in EFFECTS and t != "motion blur"]
         fighting |= a.action not in ("stand", "point", "kneel", "fallen")
     glob = _join(
         QUALITY, count_tags(staged.chars),
@@ -81,7 +81,8 @@ def build(staged) -> dict:
     )
     regions = []
     for a, c in zip(scene.actors, staged.chars):
-        action_tags = [t for t in a.out.tags if t not in EFFECTS or t in ("motion blur",)]
+        # effects stay in the scene prompt; "motion blur" never goes on a person (it smears them away)
+        action_tags = [t for t in a.out.tags if t not in EFFECTS]
         if a.out.airborne:
             action_tags.append("midair")
         hurt = any(t in a.out.tags for t in ("pain", "being hit", "injured", "defeated"))
