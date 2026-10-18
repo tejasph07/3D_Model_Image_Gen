@@ -70,6 +70,8 @@ class ActionOut:
     airborne: bool = False
     motion: np.ndarray = field(default_factory=lambda: v(0, 0, 0))
     impact: np.ndarray | None = None
+    # contact the solver should make exact by stepping in/out: (effector joint, desired point, local)
+    reach: tuple | None = None
 
 
 ACTIONS: dict[str, Callable[[ActionCtx], ActionOut]] = {}
@@ -215,7 +217,8 @@ def punch(c: ActionCtx) -> ActionOut:
     tags = ["punching", "motion lines", "impact"]
     if style == "uppercut":
         tags.append("uppercut")
-    return ActionOut(pose, tags=tags + _base_tags(c), motion=toward, impact=fist + toward * head_r * 0.9)
+    return ActionOut(pose, tags=tags + _base_tags(c), motion=toward, impact=fist + toward * head_r * 0.9,
+                     reach=("r_wrist", fist))
 
 
 def _kick_distance(c: ActionCtx) -> float:
@@ -248,7 +251,7 @@ def kick(c: ActionCtx) -> ActionOut:
     pose.hands["l"] = _hand(-0.33, 0.78, 0.05, H, (-0.2, -1, -0.5))
     pose.hands["r"] = _hand(0.2, 0.74, -0.2, H, (0.5, -1, 0))
     out = ActionOut(pose, tags=["kicking", "high kick", "leg up", "motion lines", "impact"],
-                    motion=unit(d), impact=foot + unit(d) * 0.04 * H)
+                    motion=unit(d), impact=foot + unit(d) * 0.04 * H, reach=("r_ankle", aim))
     if _armed(c):  # weapon swung out wide in the right hand for balance
         _grip(c, pose, v(0.3, 0.8, -0.1) * H, v(0.6, 0.6, -0.3), out)
         pose.hands["l"] = _hand(-0.33, 0.78, 0.05, H, (-0.2, -1, -0.5))
@@ -275,7 +278,7 @@ def flying_kick(c: ActionCtx) -> ActionOut:
     pose.hands["l"].target = pel + v(-0.25, 0.25, -0.1) * H
     pose.hands["r"] = Limb(pel + v(0.12, 0.38, 0.12) * H, v(0.5, -1, 0))
     return ActionOut(pose, tags=["flying kick", "jumping", "midair", "kicking", "motion lines", "impact"],
-                     airborne=True, motion=unit(d), impact=foot + unit(d) * 0.04 * H)
+                     airborne=True, motion=unit(d), impact=foot + unit(d) * 0.04 * H, reach=("r_ankle", aim))
 
 
 def _blade_distance(c: ActionCtx) -> float:

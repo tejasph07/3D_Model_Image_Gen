@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import random
 import re
+import zlib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -164,7 +165,8 @@ def parse_description(text: str) -> dict:
 def design(name: str, seed: int | None = None, archetype: str | None = None, description: str = "",
            avoid_palettes: tuple = (), **overrides) -> Character:
     """Create a coherent new character. Anything not given is chosen from the seed."""
-    rng = random.Random(seed if seed is not None else hash(name) & 0xFFFFFFFF)
+    # stable across processes (str hash() is randomised per interpreter)
+    rng = random.Random(seed if seed is not None else zlib.crc32(name.encode()))
     traits = parse_description(description) if description else {}
     traits.update({k: v for k, v in overrides.items() if v is not None})
     arch = archetype or traits.pop("archetype", None) or rng.choice(sorted(ARCHETYPES))

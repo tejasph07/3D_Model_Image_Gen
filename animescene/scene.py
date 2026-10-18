@@ -10,7 +10,7 @@ from PIL import Image
 
 from .camera import Camera, frame_camera
 from .characters import Cast, Character
-from .controls import debug_view, depth_image, draw_openpose, keypoints, normal_image, regions
+from .controls import color_blocks, debug_view, depth_image, draw_openpose, keypoints, normal_image, regions
 from .raster import Frame, render
 from .stage import Actor, SolvedScene, Stage
 
@@ -33,6 +33,7 @@ class Staged:
     depth: Image.Image
     normal: Image.Image
     debug: Image.Image
+    colors: Image.Image
 
     @property
     def size(self):
@@ -83,4 +84,5 @@ def stage_scene(spec_in, cast: Cast | None = None, size: tuple | None = None) ->
     masks = regions(scene, frame)
     return Staged(spec, chars, scene, cam, frame, kps, masks,
                   pose=draw_openpose(kps, W, H), depth=depth_image(frame), normal=normal_image(frame),
-                  debug=debug_view(scene, frame, kps, masks))
+                  debug=debug_view(scene, frame, kps, masks),
+                  colors=color_blocks(scene, frame, chars, spec.get("setting", "")))

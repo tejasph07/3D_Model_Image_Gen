@@ -146,6 +146,20 @@ class Stage:
         base = v(t.anchor[0], 0, t.anchor[2])
         return {k: base + F @ p for k, p in local.items()}
 
+    def _step_in(self):
+        """Auto-placed strikers whose blow falls short (or overshoots) shift along their facing."""
+        for a in self.actors:
+            if not a.auto_placed or a.out is None or a.out.reach is None or a.distance is not None:
+                continue
+            joint, goal = a.out.reach
+            miss = a.F @ (goal - a.local[joint])
+            fwd = a.F @ v(0, 0, 1)
+            along = float(np.clip(miss @ fwd, -0.3, 0.3))
+            if abs(along) > 0.01:
+                a.origin = a.origin + fwd * along
+                a.anchor = a.anchor + fwd * along
+                self._pose(a)
+
     def _align_victims(self):
         """Move each hit victim so the attacker's contact point lands on the struck body part."""
         for t in self.actors:
@@ -321,6 +335,7 @@ class Stage:
             for _ in range(iterations):
                 for a in self._order():
                     self._pose(a, with_pose=a.action in NEEDS_TARGET_POSE or a.target is not None)
+                self._step_in()
                 self._align_victims()
             if not self._resolve_collisions():
                 break

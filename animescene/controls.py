@@ -169,3 +169,77 @@ def debug_view(scene: SolvedScene, frame: Frame, kps: list[np.ndarray], masks: n
         d(arr, f"{a.name}:{a.action}", (int(x) + 6, int(y) - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
           tuple(int(c * 255) for c in pal[i % len(pal)]), 1, cv2.LINE_AA)
     return Image.fromarray(arr)
+
+
+# ----------------------------------------------------------------- colour blocking
+COLOR_RGB = {
+    "black": (28, 28, 34), "silver": (200, 202, 212), "white": (238, 238, 242), "blonde": (240, 214, 120),
+    "red": (196, 36, 40), "pink": (240, 150, 185), "blue": (50, 90, 200), "light blue": (140, 190, 240),
+    "purple": (120, 60, 170), "green": (50, 150, 80), "brown": (110, 70, 40), "orange": (235, 130, 40),
+    "aqua": (60, 200, 200), "gold": (212, 175, 55), "yellow": (240, 210, 60), "grey": (130, 132, 140),
+    "dark blue": (25, 40, 110), "golden": (220, 180, 60),
+}
+SKIN = {"": (250, 222, 200), "tan": (215, 165, 120), "dark skin": (140, 95, 65)}
+BACKDROPS = [  # (keywords, sky colour, ground colour)
+    (("fire", "burning", "lava", "inferno"), (90, 30, 25), (60, 35, 30)),
+    (("night", "neon", "moon", "dark"), (25, 30, 60), (40, 42, 55)),
+    (("rain", "storm"), (45, 55, 70), (50, 55, 62)),
+    (("snow", "ice", "winter"), (200, 215, 235), (225, 230, 240)),
+    (("sunset", "dusk", "evening"), (230, 140, 90), (120, 90, 80)),
+    (("forest", "jungle"), (90, 140, 90), (80, 100, 60)),
+    (("desert", "sand", "colosseum", "arena"), (170, 200, 235), (205, 180, 135)),
+]
+
+
+def _rgb(name: str, default=(128, 128, 128)):
+    return np.array(COLOR_RGB.get(name.strip().lower(), default), np.float32)
+
+
+def color_blocks(scene: SolvedScene, frame: Frame, chars, setting: str = "") -> Image.Image:
+    """Flat-shaded 3D render in each character's own colours (hair, skin, outfit palette).
+
+    Used as the init image of the base pass, so colours start out attached to the right body."""
+    from .characters import PALETTES
+    from .raster import PART_NAMES
+    cam = frame.cam
+    H, W = frame.ids.shape
+    sky, ground = (128, 128, 128), (110, 110, 110)
+    s = setting.lower()
+    for keys, sk, gr in BACKDROPS:
+        if any(k in s for k in keys):
+            sky, ground = sk, gr
+            break
+    yy = np.linspace(0, 1, H)[:, None, None]
+    img = np.broadcast_to(np.array(sky, np.float32) * (1.1 - 0.3 * yy), (H, W, 3)).copy()
+    img[frame.ids == GROUND_ID] = ground
+    rays = cam.rays()
+    with np.errstate(invalid="ignore"):
+        pts = cam.eye + rays * (frame.depth / (rays @ cam.fwd))[..., None]
+    light = np.array([-0.4, 0.8, 0.45])
+    light /= np.linalg.norm(light)
+    shade = 0.55 + 0.45 * np.clip(frame.normals @ light, 0, 1)
+    for i, (a, c) in enumerate(zip(scene.actors, chars)):
+        own = frame.ids == i
+        if not own.any():
+            continue
+        prim, sec = PALETTES.get(c.palette, ("grey", "black"))
+        hair = _rgb(c.hair_color.replace(" hair", ""))
+        skin = np.array(SKIN.get(c.skin, SKIN[""]), np.float32)
+        cols = {"torso": _rgb(prim), "arm": _rgb(prim), "leg": _rgb(sec), "foot": _rgb(sec) * 0.6,
+                "neck": skin, "hand": skin, "weapon": np.array((185, 190, 200), np.float32)}
+        for part, col in cols.items():
+            m = own & (frame.parts == PART_NAMES.index(part))
+            img[m] = col
+        head = own & (frame.parts == PART_NAMES.index("head"))
+        if head.any():
+            J = a.joints
+            fwd = (J["nose"] - J["head"]) / np.linalg.norm(J["nose"] - J["head"])
+            up = (J["head_top"] - J["head"]) / np.linalg.norm(J["head_top"] - J["head"])
+            rel = pts[head] - J["head"]
+            r = a.char.body.head_r
+            face = (rel @ fwd > 0.3 * r) & (rel @ up < 0.3 * r)
+            hc = np.where(face[:, None], skin, hair)
+            img[head] = hc
+        img[own] *= shade[own][:, None]
+    img = cv2.GaussianBlur(np.clip(img, 0, 255), (0, 0), max(1.0, min(W, H) / 400))
+    return Image.fromarray(img.astype(np.uint8))

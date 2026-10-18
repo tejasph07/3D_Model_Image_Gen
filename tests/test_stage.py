@@ -169,3 +169,21 @@ def test_bad_specs_fail_loudly():
         duel("moonwalk")
     with pytest.raises(ValueError):
         stage_scene({"characters": [{"name": "A", "action": "punch", "target": "Nobody"}]}, Cast())
+
+
+def test_strikes_land_across_many_random_body_pairs():
+    """Characters are designed on the fly, so contacts must hold for any pair of bodies."""
+    kick, punch = [], []
+    for sd in range(25):
+        chars = [{"name": "T", "seed": sd, "action": "stand", "target": "A", "at": [0, 0]},
+                 {"name": "A", "seed": sd + 100, "action": "kick", "target": "T"}]
+        s = stage_scene({"characters": chars}, Cast(), size=(96, 96))
+        a, t = s.scene.actor("A"), s.scene.actor("T")
+        kick.append(np.linalg.norm(a.joints["r_ankle"] - t.joints["head"]))
+        chars[1].update(action="punch", weapon="fists")
+        s = stage_scene({"characters": chars}, Cast(), size=(96, 96))
+        a, t = s.scene.actor("A"), s.scene.actor("T")
+        fist = (a.joints["r_wrist"] + a.joints["r_hand"]) / 2
+        punch.append(np.linalg.norm(fist - t.joints["head"]) - t.char.body.head_r)
+    assert max(punch) < 0.06 and np.mean(punch) < 0.04
+    assert max(kick) < 0.3 and np.mean(kick) < 0.1

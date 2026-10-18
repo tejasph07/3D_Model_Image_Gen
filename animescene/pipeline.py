@@ -30,6 +30,7 @@ class Quality:
     detail_strength: float = 0.42
     detail_steps: int = 22
     detail_size: int = 1024
+    color_init: float = 0.0  # >0: start the base pass from the 3D colour-block render at this strength
 
 
 PRESETS = {
@@ -63,6 +64,7 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
     st.pose.save(out / "control_pose.png")
     st.depth.save(out / "control_depth.png")
     st.debug.save(out / "stage_debug.png")
+    st.colors.save(out / "control_colors.png")
     (out / "prompts.json").write_text(json.dumps(pr, indent=2))
     log(f"[stage] {len(st.chars)} characters solved in {time.time() - t0:.1f}s")
 
@@ -76,7 +78,8 @@ def generate(spec, engine, out_dir: str | Path, quality: Quality | str = "high",
     controls = {"openpose": (st.pose, q.pose_scale), "depth": (st.depth, q.depth_scale)}
     img = engine.sample(pr["global"], pr["negative"], W, H, steps=q.steps, cfg=q.cfg, seed=seed,
                         controls=controls, control_end=q.control_end, regions=regions,
-                        base_weight=q.base_weight, progress="base")
+                        base_weight=q.base_weight, progress="base",
+                        **({"init_image": st.colors, "strength": q.color_init} if q.color_init > 0 else {}))
     img.save(out / "base.png")
 
     if q.hires and q.hires > 1.01:

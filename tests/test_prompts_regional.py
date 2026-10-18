@@ -77,3 +77,18 @@ def test_masks_are_resampled_to_every_attention_resolution():
     for k in range(3):
         hh, ww = int(np.ceil(104 / 2 ** k)), int(np.ceil(152 / 2 ** k))
         assert st.masks_for(hh * ww, torch.float32).shape == (3, hh * ww, 1)
+
+
+def test_color_blocks_paint_each_character_in_its_own_colours():
+    from animescene.characters import PALETTES
+    from animescene.controls import _rgb
+    from animescene.raster import PART_NAMES
+    st = stage_scene("scenes/shrine_clash.json", Cast(), size=(608, 416))
+    img = np.asarray(st.colors).astype(float)
+    for i, c in enumerate(st.chars):
+        torso = (st.frame.ids == i) & (st.frame.parts == PART_NAMES.index("torso"))
+        mean = img[torso].mean(0)
+        want = _rgb(PALETTES[c.palette][0])
+        # shading scales brightness; hue (normalised colour) must match the palette
+        cos = mean @ want / (np.linalg.norm(mean) * np.linalg.norm(want))
+        assert cos > 0.95, (c.name, c.palette, mean, want)
