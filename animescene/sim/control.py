@@ -75,6 +75,23 @@ def standard_sites(model: str) -> dict:
     out["face"] = ("head", (np.asarray(hd["pos"]) + np.array([0, 0, hd["size"][2]])).tolist())
     out["crown"] = ("head", (np.asarray(hd["pos"]) + np.array([0, hd["size"][1], 0])).tolist())
     out["eyes"] = ("head", (np.asarray(hd["pos"]) + np.array([0, 0.01, hd["size"][2] * 0.8])).tolist())
+    hp, hs = np.asarray(hd["pos"]), np.asarray(hd["size"])
+    for side, sx in (("l", 1.0), ("r", -1.0)):
+        out[f"ear_{side}"] = ("head", (hp + np.array([sx * hs[0] * 0.97, -hs[1] * 0.05, -hs[2] * 0.1])).tolist())
+        out[f"jaw_{side}"] = ("head", (hp + np.array([sx * hs[0] * 0.6, -hs[1] * 0.6, hs[2] * 0.55])).tolist())
+        out[f"temple_{side}"] = ("head", (hp + np.array([sx * hs[0] * 0.85, hs[1] * 0.25, hs[2] * 0.45])).tolist())
+        sh = S[f"{'left' if side == 'l' else 'right'}LowerLeg"]
+        a, b = np.asarray(sh["from"]), np.asarray(sh["to"])
+        out[f"backknee_{side}"] = (f"{'left' if side == 'l' else 'right'}LowerLeg", (a + (b - a) * 0.08 + np.array([0, 0, -sh["r"]])).tolist())
+        out[f"ribs_{side}"] = (cb, (np.asarray(ch["pos"]) + np.array([sx * ch["size"][0], -ch["size"][1] * 0.4, 0])).tolist())
+    out["chin"] = ("head", (hp + np.array([0, -hs[1] * 0.85, hs[2] * 0.75])).tolist())
+    out["nose"] = ("head", (hp + np.array([0, -hs[1] * 0.15, hs[2]])).tolist())
+    nk = S["neck"]
+    na, nb = np.asarray(nk["from"]), np.asarray(nk["to"])
+    out["throat"] = ("neck", ((na + nb) / 2 + np.array([0, 0, nk["r"]])).tolist())
+    out["nape"] = ("neck", ((na + nb) / 2 + np.array([0, 0, -nk["r"]])).tolist())
+    out["upperback"] = (cb, (np.asarray(ch["pos"]) + np.array([0, 0, -ch["size"][2]])).tolist())
+    out["solarplexus"] = (cb, (np.asarray(ch["pos"]) + np.array([0, -ch["size"][1] * 0.7, ch["size"][2] * 0.85])).tolist())
     out["pelvis"] = ("hips", [0.0, 0.0, 0.0])
     out["chestc"] = (cb, np.asarray(ch["pos"]).tolist())
     return out
@@ -399,6 +416,13 @@ class Scene:
                     mujoco.mj_jacBody(m, d, None, jacr, bid)
                     rows.append(jacr[:, cols] * w)
                     errs.append(e * w)
+                    continue
+                if site.startswith("@xz:"):  # a floor position only: "@xz:pelvis" -> that site over target (x, z)
+                    sid = m.site(P + site[4:]).id
+                    mujoco.mj_jacSite(m, d, jacp, None, sid)
+                    rows.append(jacp[[0, 2]][:, cols] * w)
+                    tg = np.ravel(target)
+                    errs.append(np.array([tg[0] - d.site_xpos[sid][0], tg[2] - d.site_xpos[sid][2]]) * w)
                     continue
                 if site.startswith("@y:"):  # a height only: "@y:pelvis" -> that site's height to target[1]
                     sid = m.site(P + site[3:]).id

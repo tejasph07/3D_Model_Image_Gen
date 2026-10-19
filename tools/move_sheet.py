@@ -13,13 +13,13 @@ from PIL import Image, ImageDraw
 
 from animescene.render3d import render_jobs
 from animescene.sim import keyframes as K
-from animescene.sim import moves
+from animescene.sim import moves, strikes
 from animescene.sim.control import Scene
 from animescene.sim.export import actor_frame, camera, job
 
 
 def solve(move, log=print):
-    keys = getattr(moves, move)()
+    keys = strikes.MOVES[move]() if move in strikes.MOVES else getattr(moves, move)()
     S = Scene(moves.specs())
     poses = []
     for k in keys:
@@ -43,7 +43,7 @@ def render(S, states, out, cams, size=(360, 360), labels=None):
         for j, d in enumerate(cams):
             d = np.asarray(d, float) / np.linalg.norm(d)
             p = f"{out[:-4]}_{i}_{j}.png"
-            jobs.append(job(p, acts, camera(c + d * ext * 1.35, c), size))
+            jobs.append(job(p, acts, camera(c + d * ext * 1.7, c), size))
             paths.append(p)
     render_jobs(jobs, log=lambda s: None)
     W, H = size

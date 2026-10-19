@@ -1,0 +1,71 @@
+{
+  "title": "Rin of the Back Alley",
+  "setting": "narrow back alley at night, rain, wet asphalt, neon signs, vending machine",
+  "lighting": "neon lighting, rim light",
+  "cast": [
+    {"name": "Rin", "model": "AvatarSample_B", "expression": "serious"},
+    {"name": "Kaito", "model": "AvatarSample_C", "expression": "smirk"},
+    {"name": "Goro", "model": "HairSample_Male", "scale": 1.12, "expression": "angry"},
+    {"name": "Jun", "model": "Sakurada_Fumiriya", "expression": "grin"}
+  ],
+  "beats": [
+    {"move": "ready", "a": "Rin", "v": "Kaito", "at": [0, 0], "yaw": 0,
+     "others": {"Goro": {"pose": "ready", "at": [-1.7, 0.8], "yaw": 115}, "Jun": {"pose": "ready", "at": [1.6, 1.4], "yaw": 230}},
+     "panels": [
+       {"key": "ready", "layout": "wide", "camera": {"shot": "wide", "az": 125, "elev": 14, "focus": "all", "zoom": 1.15},
+        "caption": "Kabukicho back alley. 2:14 a.m.",
+        "dialogue": [{"who": "Kaito", "text": "Lost, little girl?"}, {"who": "Rin", "text": "Move."}]}
+     ]},
+    {"move": "palm_strike", "a": "Rin", "v": "Goro", "at": [0, 0], "yaw": 0,
+     "others": {"Kaito": {"pose": "ready", "at": [1.8, 1.2], "yaw": 230}, "Jun": {"pose": "ready", "at": [-1.8, 1.6], "yaw": 150}},
+     "panels": [
+       {"key": "palm strike", "layout": "half", "camera": {"shot": "medium", "az": 80, "elev": 4},
+        "caption": "Goro charges first.", "sfx": [{"text": "BAM!", "at": "impact"}]},
+       {"key": "palm strike", "layout": "half", "camera": {"shot": "close", "az": 55, "elev": -8, "focus": "contact"}}
+     ]},
+    {"move": "stomach_punch", "a": "Rin", "v": "Kaito", "at": [0, 0], "yaw": 0,
+     "others": {"Goro": {"pose": "down", "at": [-1.7, 1.4], "yaw": 120}, "Jun": {"pose": "ready", "at": [1.9, 1.9], "yaw": 220}},
+     "panels": [
+       {"key": "punch", "layout": "half", "camera": {"shot": "close", "az": 100, "elev": 0, "focus": "contact"},
+        "sfx": [{"text": "DOSU!", "at": "impact"}]},
+       {"key": "doubled over", "layout": "half", "camera": {"shot": "medium", "az": 65, "elev": 6},
+        "dialogue": [{"who": "Kaito", "text": "Gh...!"}]}
+     ]},
+    {"move": "uppercut", "a": "Rin", "v": "Kaito", "at": [0, 0], "yaw": 0,
+     "others": {"Goro": {"pose": "down", "at": [-1.7, 1.4], "yaw": 120}, "Jun": {"pose": "ready", "at": [1.9, 1.9], "yaw": 220}},
+     "panels": [
+       {"key": "uppercut", "layout": "full", "camera": {"shot": "medium", "az": 95, "elev": -12}, "sfx": [{"text": "GAKK!", "at": "impact"}]}
+     ]},
+    {"move": "roundhouse", "a": "Rin", "v": "Goro", "at": [0, 0], "yaw": 0,
+     "others": {"Kaito": {"pose": "down", "at": [1.8, 1.0], "yaw": 250}, "Jun": {"pose": "ready", "at": [-1.9, 1.9], "yaw": 150}},
+     "panels": [
+       {"key": "roundhouse", "layout": "wide", "camera": {"shot": "medium", "az": 70, "elev": 8, "zoom": 1.2},
+        "caption": "The big one gets back up.", "sfx": [{"text": "DOGO!", "at": "impact"}]}
+     ]},
+    {"move": "back_knee_kick", "a": "Rin", "v": "Goro", "at": [0, 0], "yaw": 0,
+     "others": {"Kaito": {"pose": "down", "at": [1.8, 1.0], "yaw": 250}, "Jun": {"pose": "ready", "at": [-1.9, 1.9], "yaw": 150}},
+     "panels": [
+       {"key": "stamp", "layout": "half", "camera": {"shot": "medium", "az": 120, "elev": 6}, "sfx": [{"text": "GKK", "at": "impact"}]}
+     ]},
+    {"move": "knee_buckle", "a": "Rin", "v": "Goro", "at": [0, 0], "yaw": 0,
+     "others": {"Kaito": {"pose": "down", "at": [1.8, 1.0], "yaw": 250}, "Jun": {"pose": "ready", "at": [-1.9, 1.9], "yaw": 150}},
+     "panels": [
+       {"key": "buckle", "layout": "half", "camera": {"shot": "medium", "az": 60, "elev": 10},
+        "dialogue": [{"who": "Goro", "text": "My knee--!"}]}
+     ]},
+    {"move": "leg_lock_kick", "a": "Rin", "v": "Jun", "at": [0, 0], "yaw": 0,
+     "others": {"Kaito": {"pose": "down", "at": [2.1, 0.0], "yaw": 250}, "Goro": {"pose": "kneel", "at": [-2.0, 0.6], "yaw": 110}},
+     "panels": [
+       {"key": "kick", "layout": "half", "camera": {"shot": "medium", "az": 90, "elev": 5},
+        "dialogue": [{"who": "Jun", "text": "Too slow!"}]},
+       {"key": "catch", "layout": "half", "camera": {"shot": "close", "az": 60, "elev": 5, "focus": "contact"},
+        "dialogue": [{"who": "Rin", "text": "Caught."}]},
+       {"key": "down", "layout": "wide", "camera": {"shot": "medium", "az": 100, "elev": 15, "zoom": 1.2}, "sfx": [{"text": "DOSSHA", "at": "impact"}]},
+       {"key": "ashi garami", "layout": "half", "camera": {"shot": "medium", "az": 60, "elev": 35}},
+       {"key": "break", "layout": "half", "camera": {"shot": "close", "az": 110, "elev": 20, "focus": "v"},
+        "dialogue": [{"who": "Jun", "text": "AAAGH!"}]},
+       {"key": "break", "layout": "wide", "camera": {"shot": "wide", "az": 140, "elev": 25, "focus": "all", "zoom": 1.1},
+        "caption": "Three down."}
+     ]}
+  ]
+}

@@ -202,9 +202,10 @@ def _tasks_for(S, key: Key, actor: str):
     for site in key.support.get(actor, ()):
         tasks.append((f"@y:{site}", np.array([0.0, _floor_height(S, actor, site), 0.0]), 1.5))
     r = key.root.get(actor, {})
-    if r.get("pos") is not None:  # where the hips should be (a hint: the touches can move them a little);
-        p = _pos(S, actor, r["pos"])  # height None: whatever the legs and supports make it
-        tasks.append(("pelvis", p, r.get("pos_w", 0.5)))
+    if r.get("pos") is not None and actor not in key.balance:  # where the hips should be (a hint); height None:
+        p = _pos(S, actor, r["pos"])  # whatever the legs and supports make it. (Standing bodies: the hint places
+        # the feet and the weight instead, so they can bend.)
+        tasks.append(("pelvis" if r["pos"][1] is not None else "@xz:pelvis", p, r.get("pos_w", 0.5)))
     if actor in key.balance:
         if r.get("pos") is not None:  # standing: feet under the hips, a stance apart, the weight between them
             base = _pos(S, actor, r["pos"]) * np.array([1.0, 0, 1.0])
@@ -284,6 +285,27 @@ def solve_key(S: Scene, key: Key, rounds=4, iters=150, log=None, verbose=False, 
                 best = (sc, S.d.qpos.copy())
         S.d.qpos[:] = best[1]
         mujoco.mj_kinematics(S.m, S.d)
+        # out of reach: she steps in (or back) by the horizontal shortfall of her touches and solves again
+        r = key.root.get(a, {})
+        for _ in range(3 if acting and r.get("pos") is not None and r.get("approach", True) else 0):
+            miss = [(S.site(t.other, t.spot) + _normal(S, t) * t.gap) - S.site(t.who, t.part) for t in key.touches
+                    if t.who == a and t.verb not in ("squeeze",) and t.other != a]
+            if not miss:
+                break
+            m = np.mean(miss, axis=0) * np.array([1.0, 0, 1.0])
+            if np.linalg.norm(m) < 0.03:
+                break
+            m *= min(1.0, 0.35 / np.linalg.norm(m))
+            r["pos"] = [r["pos"][0] + m[0], r["pos"][1], r["pos"][2] + m[2]]
+            S.d.qpos[:] = best[1]
+            place_root(S, a, [S.body(a, "hips").xpos[0] + m[0], None, S.body(a, "hips").xpos[2] + m[2]],
+                       r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0))
+            _solve_actor(S, key, a, postures[a], rounds, iters, log if verbose else None)
+            sc = score(report(S, key))
+            if sc < best[0]:
+                best = (sc, S.d.qpos.copy())
+            S.d.qpos[:] = best[1]
+            mujoco.mj_kinematics(S.m, S.d)
     mujoco.mj_forward(S.m, S.d)
     rep = report(S, key)
     if log:
@@ -401,4 +423,43 @@ def hand_shapes(key: Key) -> dict:
             out.setdefault(t.who, {"l": "relaxed", "r": "relaxed"})[t.side()] = t.shape
     for a, sh in key.shapes.items():
         out.setdefault(a, {"l": "relaxed", "r": "relaxed"}).update(sh)
+    return out
+
+
+def place_keys(keys: list, names: dict, origin=(0.0, 0.0), yaw=0.0) -> list:
+    """A move written for actors "A"/"V" with "A" at the origin facing +z, re-cast onto named characters,
+    moved to `origin` (x, z) and turned by `yaw` degrees. Returns new Key objects."""
+    import copy
+    c, s_ = np.cos(np.deg2rad(yaw)), np.sin(np.deg2rad(yaw))
+
+    def rot(v):
+        v = np.asarray(v, float)
+        return np.array([c * v[0] + s_ * v[2], v[1], -s_ * v[0] + c * v[2]])
+
+    def rn(n):
+        return names.get(n, n)
+
+    out = []
+    for k in keys:
+        k2 = copy.copy(k)
+        k2.touches = []
+        for t in k.touches:
+            t2 = copy.copy(t)
+            t2.who, t2.other = rn(t.who), rn(t.other)
+            if not callable(t.normal) and not isinstance(t.normal, str):
+                t2.normal = rot(t.normal)
+            k2.touches.append(t2)
+        for f in ("support", "posture", "lock", "stiff", "shapes"):
+            setattr(k2, f, {rn(a): copy.deepcopy(v) for a, v in getattr(k, f).items()})
+        k2.balance, k2.order, k2.fixed = tuple(rn(a) for a in k.balance), tuple(rn(a) for a in k.order), tuple(rn(a) for a in k.fixed)
+        k2.root = {}
+        for a, r in k.root.items():
+            r2 = dict(r)
+            if r.get("pos") is not None:
+                p = r["pos"]
+                xz = rot([p[0], 0.0, p[2]])
+                r2["pos"] = [xz[0] + origin[0], p[1], xz[2] + origin[1]]
+            r2["yaw"] = r.get("yaw", 0.0) + yaw
+            k2.root[rn(a)] = r2
+        out.append(k2)
     return out

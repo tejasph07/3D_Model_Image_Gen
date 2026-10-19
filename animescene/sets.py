@@ -42,7 +42,7 @@ def alley(center, cam, spec):
     yaw = _yaw(f)
     P = lambda x, y, z: _P(c, f, r, x, y, z)  # noqa: E731
     prims = [
-        {"type": "plane", "size": [9, 60], "pos": P(0, 0.001, 10), "rotY": yaw, "color": "#2a2c33", "rough": 0.35},
+        {"type": "plane", "size": [9, 60], "pos": P(0, 0.001, 10), "rotY": yaw, "color": "#555a68", "rough": 0.3},
         {"type": "box", "size": [0.4, 9, 60], "pos": P(-3.4, 4.5, 10), "rotY": yaw, "color": "#4a3f45"},
         {"type": "box", "size": [0.4, 9, 60], "pos": P(3.4, 4.5, 10), "rotY": yaw, "color": "#433a44"},
         {"type": "box", "size": [7, 9, 0.4], "pos": P(0, 4.5, 26), "rotY": yaw, "color": "#2b2a35"},
