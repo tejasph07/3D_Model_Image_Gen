@@ -1,8 +1,8 @@
 """A fight scene from keyframed moves -> rendered manga panels -> pages.
 
 Scene file (JSON):
-  title, setting, lighting, cast: [{name, model, scale?, expression?}]
-  beats: [{move, a, v, at: [x, z], yaw, others: {name: {pose: ready|down|kneel|doubled, at: [x, z], yaw}},
+  title, setting, lighting, cast: [{name, model, scale?, expression?}], injuries?: [{who, spot, kind, radius?, age?}]
+  beats: [{move, a, v, at: [x, z], yaw, injuries?, treat?: [{who, spot}], heal?: 0..1, others: {name: {pose: ready|down|kneel|doubled, at: [x, z], yaw}},
            panels: [{key: <keyframe name>, camera: {shot: wide|medium|close|extreme, az, elev, focus: pair|a|v|contact},
                      layout: wide|half|full|tall, caption, dialogue: [{who, text}], sfx: [{text, at: impact}],
                      expression: {name: tag}}]}]
@@ -26,6 +26,7 @@ from . import moves as M
 from . import strikes as X
 from .control import Scene
 from .export import actor_frame
+from .wounds import Ledger, from_hit
 from .model import ActorSpec
 
 SHOT = {"wide": 5.0, "medium": 3.0, "close": 1.7, "extreme": 0.95}
@@ -145,6 +146,9 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
     S = Scene(specs)
     expr0 = {c["name"]: c.get("expression", "serious") for c in cast}
     panels, jobs, metas = [], [], []
+    wounds = Ledger()  # injuries carried from beat to beat
+    for w in spec.get("injuries", []):  # already hurt when the story starts
+        wounds.add(w["who"], w["spot"], w.get("kind", "bruise"), w.get("radius", 0.03), w.get("age", 0.0))
     for bi, beat in enumerate(spec["beats"]):
         keys = beat_keys(beat)
         wanted = {p["key"] for p in beat.get("panels", [])}
@@ -179,7 +183,8 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
                     look = S.site(beat["v"], "eyes").tolist()
                 elif n == beat["v"]:
                     look = S.site(beat["a"], "eyes").tolist()
-                acts.append(actor_frame(S.m, S.d, s, expression=e, lookAt=look, **({"fist": shapes[n]} if n in shapes else {})))
+                acts.append(actor_frame(S.m, S.d, s, expression=e, lookAt=look, injuries=wounds.render(S, n),
+                                        **({"fist": shapes[n]} if n in shapes else {})))
             env = build_set(spec, np.mean([S.body(n, "hips").xpos for n in (beat["a"], beat["v"])], axis=0), cam)
             jobs.append({"out": str(pdir / "final.png"), "width": size[0], "height": size[1], "camera": cam.job_camera(),
                          "actors": acts, "environment": env, "supersample": 2, "passes": [], "softContacts": True})
@@ -197,6 +202,17 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
             meta["subjects"] = [max(0, min(xs)), max(0, min(ys)), min(size[0], max(xs)), min(size[1], max(ys))]
             (pdir / "meta.json").write_text(json.dumps(meta))
             panels.append((p, pdir))
+        for k in keys:  # the blows that landed in this beat mark the body from the next beat on
+            for t in k.touches:
+                if t.verb in ("punch", "kick", "knee", "stamp", "press", "twist", "pinch") and t.who == beat["a"]:
+                    kind, r = from_hit(t.verb, t.spot)
+                    wounds.add(t.other, t.spot, kind, r)
+        for w in beat.get("injuries", []):  # story-given: {who, spot, kind, radius}
+            wounds.add(w["who"], w["spot"], w.get("kind", "bruise"), w.get("radius", 0.03))
+        for w in beat.get("treat", []):  # {who, spot}: bandaged
+            wounds.treat(w["who"], w["spot"])
+        if beat.get("heal"):  # time passes: 0..1
+            wounds.heal(beat["heal"])
     log(f"rendering {len(jobs)} panels")
     render_jobs(jobs, log=lambda s: None)
     pages = compose_pages(spec, panels, out)

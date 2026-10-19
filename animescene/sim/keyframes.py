@@ -114,6 +114,8 @@ def rest(who, part, other, spot, normal="surface", weight=1.0, face=True):
 
 
 def hook(who, part, other, spot, normal="surface", weight=1.0):
+    """`part` (an instep, a heel, the crook of a knee) hooked round `spot` from its `normal` side, e.g. a foot
+    behind a glute."""
     return Touch(who, part, other, spot, "hook", normal, 0.0, None, weight)
 
 
@@ -123,6 +125,8 @@ def tuck(who, part, other, spot, gap=0.04, weight=1.0):
 
 
 def squeeze(who, part, other, spot, normal="surface", depth=0.01, weight=0.25):
+    """`part` pressed lightly into `spot` as a secondary pressure (knees pinching a leg, a chest on a back);
+    weaker than a main touch, so it gives way first."""
     return Touch(who, part, other, spot, "squeeze", normal, -depth, None, weight)
 
 
