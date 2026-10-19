@@ -268,9 +268,10 @@ class Scene:
             d.xfrc_applied[bid, :3] = F
             d.xfrc_applied[bid, 3:] = T
 
-    def grip(self, who: str, limb: str, other: str, body: str, on=True, stiff=0.04):
-        """Weld `who`'s limb to `other`'s body in their *current* relative pose (a hand closing on what it
-        touches). Only call it when the limb is touching (see `touching`)."""
+    def grip(self, who: str, limb: str, other: str, body: str, on=True, stiff=0.04, at=None):
+        """Join `who`'s limb to `other`'s body where they touch (a hand closing on what it touches): a ball
+        joint between a point on each surface. `at` = (site or point on the limb, site or point on the body)
+        picks those points (default: where the two shapes are closest). Only call it when they touch."""
         n = f"grip|{who}:{limb}|{other}:{body}"
         eid = self.m.equality(n).id
         if on:
@@ -279,6 +280,10 @@ class Scene:
             g1, g2 = self.m.geom(f"{who}:{limb}").id, self.m.geom(f"{other}:{body}").id
             ft = np.zeros(6)
             mujoco.mj_geomDistance(self.m, self.d, g1, g2, 0.2, ft)
+            if at is not None:  # a named place on each (e.g. the wrist blade under the Achilles): anchor there
+                p1, p2 = (self.site(who, at[0]) if isinstance(at[0], str) else np.asarray(at[0])), \
+                    (self.site(other, at[1]) if isinstance(at[1], str) else np.asarray(at[1]))
+                ft = np.r_[p1, p2]
             # each anchor on its own body's surface, where the two surfaces meet: the grip holds the surfaces
             # together, it does not try to pull them into each other (which the contact would fight)
             for k, b, p in ((0, b1, ft[:3]), (3, b2, ft[3:])):
