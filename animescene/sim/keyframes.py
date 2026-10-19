@@ -200,9 +200,21 @@ def _tasks_for(S, key: Key, actor: str):
     if r.get("pos") is not None:  # where the hips should be (a hint: the touches can move them a little)
         tasks.append(("pelvis", np.asarray(r["pos"], float), r.get("pos_w", 0.5)))
     if actor in key.balance:
-        sup = [S.site(actor, s) for s in key.support.get(actor, ())]
-        if sup:
-            tasks.append(("@com", np.mean(sup, axis=0), 1.0))
+        if r.get("pos") is not None:  # standing: feet under the hips, a stance apart, the weight between them
+            base = np.asarray(r["pos"], float) * np.array([1.0, 0, 1.0])
+            left = _quat(r.get("yaw", 0.0))
+            m = np.zeros(9)
+            mujoco.mju_quat2Mat(m, left)
+            lat, fwd = m.reshape(3, 3)[:, 0], m.reshape(3, 3)[:, 2]
+            off = r.get("stance", 0.10)
+            for side, sx in (("l", 1.0), ("r", -1.0)):
+                if f"sole_{side}" in key.support.get(actor, ()):
+                    tasks.append((f"sole_{side}", base + lat * sx * off + fwd * r.get("step", {}).get(side, 0.0), 0.4))
+            tasks.append(("@com", base, 1.0))
+        else:
+            sup = [S.site(actor, s) for s in key.support.get(actor, ())]
+            if sup:
+                tasks.append(("@com", np.mean(sup, axis=0), 1.0))
     return tasks, tuple(allow)
 
 
@@ -219,40 +231,84 @@ def _floor_height(S, actor, site):
     return float(min(size[:3]))
 
 
-def solve_key(S: Scene, key: Key, rounds=4, iters=150, log=None, verbose=False):
-    """Both bodies into the keyframe: alternate whole-body solves (each sees the other where it is now)."""
+def score(rep: dict) -> float:
+    """One number for how well a keyframe is met: main touches, squeezes (softer), overlaps (harder)."""
+    sc = 0.0
+    for k, v in rep.items():
+        sc += 4.0 * v if k == "overlap" else (0.3 * v if k.startswith("squeeze") else v)
+    return sc
+
+
+def _seeds(key: Key, a: str):
+    """Fixed starting variations for an actor's solve (the same list every time: results stay deterministic)."""
+    r = key.root.get(a, {})
+    out = [dict()]
+    if r.get("pos") is not None:
+        for dz in (-0.08, 0.08):
+            out.append(dict(pos=list(np.asarray(r["pos"], float) + [0, 0, dz])))
+    out.append(dict(pitch=r.get("pitch", 0.0) - 12))
+    out.append(dict(pitch=r.get("pitch", 0.0) + 12))
+    return out
+
+
+def solve_key(S: Scene, key: Key, rounds=4, iters=150, log=None, verbose=False, seeds=True):
+    """Both bodies into the keyframe: each actor in key.order is solved against the others where they are
+    now; an acting body is tried from a few fixed starting variations and the best-scoring result is kept."""
     postures = {a: posed(S, a, base=np.zeros(len(S.actors[a].jids)), **key.posture.get(a, {})) for a in S.actors}
     for a, r in key.root.items():
         pos = r.get("pos")
         place_root(S, a, None if pos is None else np.asarray(pos, float), r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0))
         S.d.qpos[S.actors[a].qadr] = postures[a]
     mujoco.mj_kinematics(S.m, S.d)
-    # each body in turn (the receiver first: it is posed by its own description), each in two stages: without
-    # collisions (the limbs find which side of which body they belong: an arm can only wrap round a leg if it
-    # may pass it while searching), then with them (the result overlaps nothing)
     for a in key.order:
         if a in key.fixed:
             continue
-        tasks0 = None
-        for stage, avoid in enumerate((False, False, True, True)[:max(2, rounds)]):
-            tasks, allow = _tasks_for(S, key, a)
-            r = key.root.get(a, {})
-            orient = [("hips", _quat(r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0)), r.get("hold", 0.1))] if r else None
-            q, root, res = S.ik(a, tasks, posture=postures[a], w_post=key.stiff.get(a, 0.05), iters=iters, root=True,
-                                root_rot=True, root_cost=1.0, avoid=avoid, allow=allow, orient=orient, upright=0.0,
-                                q0=S.d.qpos.copy(), lock=key.lock.get(a, ()), soft=key.soft)
-            adr = _root_adr(S, a)
-            S.d.qpos[adr:adr + 7] = root
-            S.d.qpos[S.actors[a].qadr] = q
-            mujoco.mj_kinematics(S.m, S.d)
-            if log and verbose:
-                rr = report(S, key)
-                log(f"   {a} stage {stage} avoid={avoid}: " + ", ".join(f"{k.split(':')[0]}.{k.split('->')[0].split('.')[-1]} {v:.3f}" for k, v in rr.items()))
+        acting = any(t.who == a for t in key.touches)
+        start = S.d.qpos.copy()
+        best = None
+        for sd in (_seeds(key, a) if seeds and acting else [dict()]):
+            S.d.qpos[:] = start
+            r = {**key.root.get(a, {}), **sd}
+            if sd:
+                place_root(S, a, None if r.get("pos") is None else np.asarray(r["pos"], float), r.get("yaw", 0.0), r.get("pitch", 0.0),
+                           r.get("roll", 0.0))
+            _solve_actor(S, key, a, postures[a], rounds, iters, log if verbose else None)
+            sc = score({k: v for k, v in report(S, key).items()})
+            if best is None or sc < best[0] - 1e-9:
+                best = (sc, S.d.qpos.copy())
+        S.d.qpos[:] = best[1]
+        mujoco.mj_kinematics(S.m, S.d)
     mujoco.mj_forward(S.m, S.d)
     rep = report(S, key)
     if log:
         log(f"[key {key.name or key.t}] " + ", ".join(f"{k} {v:.3f}" for k, v in rep.items()))
     return S.d.qpos.copy(), rep
+
+
+def _solve_actor(S, key, a, posture, rounds, iters, log=None):
+    """Two stages: without collisions (the limbs find which side of which body they belong: an arm can only
+    wrap round a leg if it may pass it while searching), then with them until it stops improving."""
+    best, worse = np.inf, 0
+    for stage, avoid in enumerate([False, False] + [True] * max(2, rounds + 4)):
+        if avoid and worse >= 2:
+            break
+        tasks, allow = _tasks_for(S, key, a)
+        r = key.root.get(a, {})
+        orient = [("hips", _quat(r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0)), r.get("hold", 0.1))] if r else None
+        q, root, res = S.ik(a, tasks, posture=posture, w_post=key.stiff.get(a, 0.05), iters=iters, root=True,
+                            root_rot=True, root_cost=1.0, avoid=avoid, allow=allow, orient=orient, upright=0.0,
+                            q0=S.d.qpos.copy(), lock=key.lock.get(a, ()), soft=key.soft)
+        adr = _root_adr(S, a)
+        S.d.qpos[adr:adr + 7] = root
+        S.d.qpos[S.actors[a].qadr] = q
+        mujoco.mj_kinematics(S.m, S.d)
+        if avoid:
+            err = max([v for k, v in report(S, key).items() if not k.startswith(("squeeze", "overlap"))] or [0.0])
+            worse = worse + 1 if err > best - 0.002 else 0
+            best = min(best, err)
+        if log:
+            rr = report(S, key)
+            log(f"   {a} stage {stage} avoid={avoid}: " + ", ".join(f"{k.split(':')[0]} {v:.3f}" for k, v in rr.items()))
 
 
 def report(S: Scene, key: Key) -> dict:
