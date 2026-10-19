@@ -20,7 +20,14 @@ def render_times(S, times, out, cams, size=(480, 480), extra=None):
             S.d.qpos[:] = S.frames[k][1]
         mujoco.mj_forward(S.m, S.d)
         acts = [actor_frame(S.m, S.d, s, **((extra or {}).get(n, {}))) for n, s in S.specs.items()]
+        pts = np.array([S.d.xpos[i] for i in range(S.m.nbody) if ":" in S.m.body(i).name and not S.m.body(i).name.endswith("target")])
+        lo, hi = pts.min(0) - 0.15, pts.max(0) + 0.15
+        centre, extent = (lo + hi) / 2, float(np.linalg.norm(hi - lo))
         for ci, (eye, tgt) in enumerate(cams):
+            if tgt is None:  # eye is a direction from the pair's centre: frame both bodies whole
+                dirn = np.asarray(eye, float) / np.linalg.norm(eye)
+                tgt = centre
+                eye = centre + dirn * extent / (2 * np.tan(np.deg2rad(35) / 2)) * 1.05
             p = f"{out[:-4]}_{ti}_{ci}.png"
             jobs.append(job(p, acts, camera(eye, tgt), size, softContacts=False))
             labels.append(f"t={t:.2f} cam{ci}")

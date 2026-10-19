@@ -44,8 +44,23 @@ SKELETON = [
 ]
 MIRROR = {"left": "right"}
 # servo stiffness (N m / rad per kg of the body it moves, roughly) and damping per group
-GROUPS = {"trunk": (900, 40), "neck": (120, 6), "shoulder": (260, 12), "elbow": (160, 8), "forearm": (40, 2),
-          "wrist": (25, 1.5), "hip": (900, 40), "knee": (700, 30), "ankle": (220, 10)}
+GROUPS = {"trunk": (900, 10), "neck": (120, 1.5), "shoulder": (260, 3), "elbow": (160, 2), "forearm": (40, 0.5),
+          "wrist": (25, 0.3), "hip": (900, 8), "knee": (700, 6), "ankle": (220, 2)}
+# the strongest torque a muscle group can produce (N m, for a 70 kg adult; scaled by body mass): a servo
+# saturates there, so nobody lifts what a human couldn't
+MAX_TORQUE = {"trunk": 220, "neck": 35, "shoulder": 80, "elbow": 65, "forearm": 10, "wrist": 15, "hip": 220,
+              "knee": 200, "ankle": 130}
+
+
+# body segment mass fractions (de Leva 1996, adult average); a missing upperChest folds into the chest
+MASS_FRACTION = {"head": 0.055, "neck": 0.014, "upperChest": 0.15, "chest": 0.10, "spine": 0.07, "hips": 0.11,
+                 "Shoulder": 0.003, "UpperArm": 0.027, "LowerArm": 0.016, "Hand": 0.006,
+                 "UpperLeg": 0.142, "LowerLeg": 0.043, "Foot": 0.014}
+
+
+def body_mass(height: float, build: float = 1.0) -> float:
+    """Total mass of a character from its height (BMI 21, x build)."""
+    return 21.0 * height * height * build
 
 
 def _mirror(axis):
@@ -133,7 +148,7 @@ def actor_xml(spec: ActorSpec) -> tuple[str, list, list]:
                 lines.append(f'{pad}  <joint name="{P}{bone}.{jn}" axis="{_f(ax)}" range="{lo} {hi}" damping="{kd:.2f}" '
                              f'armature="0.01" limited="true"/>')
                 acts.append(f'<position name="{P}{bone}.{jn}" joint="{P}{bone}.{jn}" kp="{kp:.1f}" '
-                            f'forcerange="-{kp * 2.5:.0f} {kp * 2.5:.0f}"/>')
+                            f'forcerange="-{MAX_TORQUE[grp]} {MAX_TORQUE[grp]}"/>')
         g = geom(bone)
         if g:
             lines.append(pad + "  " + g)
@@ -209,9 +224,40 @@ def compile_model(actors: list[ActorSpec], extra_world: str = "", extra_equality
         for x, y in (("hips", "chest"), ("spine", "upperChest"), ("chest", "neck"), ("upperChest", "head"),
                      ("leftShoulder", "neck"), ("rightShoulder", "neck"), ("leftUpperArm", "upperChest"),
                      ("rightUpperArm", "upperChest"), ("leftUpperArm", "chest"), ("rightUpperArm", "chest"),
-                     ("leftUpperLeg", "spine"), ("rightUpperLeg", "spine")):
+                     ("leftUpperLeg", "spine"), ("rightUpperLeg", "spine"),
+                     # a person's own hands and forearms pass each other freely (crossed guards, clasped hands:
+                     # a gable grip is a constraint, not a collision)
+                     ("leftHand", "rightHand"), ("leftHand", "rightLowerArm"), ("rightHand", "leftLowerArm"),
+                     ("leftLowerArm", "rightLowerArm")):
             pairs.add(tuple(sorted((P + x, P + y))))
     names = {m.body(i).name for i in range(m.nbody)}
     exclude = "\n".join(f'    <exclude body1="{a}" body2="{b}"/>' for a, b in sorted(pairs) if a in names and b in names)
     xml = build(actors, extra_world, extra_equality, timestep, exclude)
-    return mujoco.MjModel.from_xml_string(xml), xml
+    m = mujoco.MjModel.from_xml_string(xml)
+    set_masses(m, actors)
+    return m, xml
+
+
+def set_masses(m, actors: list[ActorSpec]):
+    """Give every segment its anatomical share of the body's mass (geometry alone over-weights legs in
+    trousers and under-weights the chest); inertias scale with the mass so the shapes' distribution stays."""
+    for a in actors:
+        P = a.name + ":"
+        names = {m.body(i).name[len(P):]: i for i in range(m.nbody) if m.body(i).name.startswith(P)}
+        shapes = fit(a.model)
+        B = shapes["_bones"]
+        height = (max(p[1] for p in B.values()) + 0.12) * a.scale
+        total = body_mass(height)
+        fr = {}
+        for n in names:
+            key = next((k for k in MASS_FRACTION if n == k or n.endswith(k)), None)
+            if key:
+                fr[n] = MASS_FRACTION[key]
+        if "upperChest" not in names:
+            fr["chest"] = fr.get("chest", 0) + MASS_FRACTION["upperChest"]
+        for n, f in fr.items():
+            i = names[n]
+            new = total * f
+            if m.body_mass[i] > 0:
+                m.body_inertia[i] *= new / m.body_mass[i]
+            m.body_mass[i] = new
