@@ -1,0 +1,421 @@
+{
+  "title": "Rin of the Back Alley",
+  "setting": "narrow back alley at night, rain, wet asphalt, puddles, neon signs, vending machine, steam, power lines",
+  "lighting": "neon lighting, rim light, cinematic lighting, dramatic shadows",
+  "seed": 101,
+  "cast": [
+    {
+      "name": "Rin",
+      "gender": "female",
+      "archetype": "brawler",
+      "hair_color": "black",
+      "hair": "long hair, high ponytail",
+      "eyes": "red",
+      "outfit": "red cropped jacket, black sports bra, midriff, navel, black bike shorts, hand wraps, black boots",
+      "palette": "crimson",
+      "expression": "serious",
+      "seed": 1
+    },
+    {
+      "name": "Kaito",
+      "gender": "male",
+      "archetype": "brawler",
+      "build": "muscular",
+      "hair_color": "blonde",
+      "hair": "spiked hair",
+      "eyes": "blue",
+      "outfit": "white tank top, blue cargo pants, bandaged hands, silver earrings",
+      "palette": "azure",
+      "expression": "smirk",
+      "seed": 2
+    },
+    {
+      "name": "Goro",
+      "gender": "male",
+      "archetype": "brawler",
+      "build": "heavy",
+      "hair_color": "brown",
+      "hair": "buzz cut",
+      "eyes": "brown",
+      "outfit": "open black leather jacket, bare chest, plump, navel, black jeans, chain necklace",
+      "palette": "onyx",
+      "expression": "angry",
+      "seed": 3
+    },
+    {
+      "name": "Jun",
+      "gender": "male",
+      "archetype": "assassin",
+      "build": "slim",
+      "hair_color": "purple",
+      "hair": "messy hair, hair over one eye",
+      "eyes": "yellow",
+      "outfit": "purple hoodie, black pants, sneakers",
+      "weapon": "dagger",
+      "palette": "violet",
+      "expression": "grin",
+      "seed": 4
+    }
+  ],
+  "panels": [
+    {
+      "id": "p1",
+      "layout": "wide",
+      "caption": "Kabukicho back alley. 2:14 a.m.",
+      "camera": {
+        "shot": "wide",
+        "azimuth": 62,
+        "elevation": 12,
+        "margin": 0.04
+      },
+      "characters": [
+        {
+          "name": "Rin",
+          "action": "stance",
+          "target": "Kaito",
+          "at": [
+            0.3,
+            1.0
+          ]
+        },
+        {
+          "name": "Kaito",
+          "action": "stance",
+          "target": "Rin",
+          "at": [
+            -0.4,
+            -1.4
+          ]
+        },
+        {
+          "name": "Goro",
+          "action": "stance",
+          "target": "Rin",
+          "at": [
+            -1.8,
+            -0.8
+          ]
+        },
+        {
+          "name": "Jun",
+          "action": "stance",
+          "target": "Rin",
+          "at": [
+            1.4,
+            -1.0
+          ]
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Kaito",
+          "text": "Lost, little girl?"
+        },
+        {
+          "who": "Rin",
+          "text": "Move."
+        }
+      ]
+    },
+    {
+      "id": "p2",
+      "layout": "half",
+      "caption": "Goro charges first.",
+      "camera": {
+        "shot": "closeup",
+        "azimuth": 20,
+        "focus": [
+          "Rin.upper",
+          "Goro.upper",
+          "impact"
+        ],
+        "margin": 0.05
+      },
+      "characters": [
+        {
+          "name": "Goro",
+          "action": "doubled_over",
+          "target": "Rin",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "inflict": [
+            {
+              "kind": "bruise",
+              "size": 0.11
+            }
+          ]
+        },
+        {
+          "name": "Rin",
+          "action": "palm_strike",
+          "style": "energy",
+          "target": "Goro",
+          "bearing": -50
+        }
+      ],
+      "sfx": [
+        {
+          "text": "DOOM!!",
+          "at": "impact"
+        }
+      ]
+    },
+    {
+      "id": "p3",
+      "layout": "half",
+      "camera": {
+        "shot": "closeup",
+        "azimuth": -30,
+        "focus": [
+          "Rin.upper",
+          "Kaito.upper"
+        ],
+        "margin": 0.05
+      },
+      "characters": [
+        {
+          "name": "Rin",
+          "action": "stumble",
+          "target": "Kaito",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "inflict": [
+            {
+              "kind": "bleeding_cut",
+              "size": 0.06
+            }
+          ]
+        },
+        {
+          "name": "Kaito",
+          "action": "punch",
+          "aim": "face",
+          "target": "Rin",
+          "bearing": 75
+        }
+      ],
+      "sfx": [
+        {
+          "text": "CRACK",
+          "at": "impact"
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Kaito",
+          "text": "Too slow!"
+        }
+      ]
+    },
+    {
+      "id": "p4",
+      "layout": "wide",
+      "caption": "He doesn't fight fair.",
+      "camera": {
+        "shot": "low_angle",
+        "azimuth": -10,
+        "margin": 0.05
+      },
+      "characters": [
+        {
+          "name": "Rin",
+          "action": "knee_buckle",
+          "leg": "l",
+          "target": "Kaito",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "facing": 100
+        },
+        {
+          "name": "Kaito",
+          "action": "back_knee_kick",
+          "leg": "l",
+          "target": "Rin"
+        }
+      ],
+      "sfx": [
+        {
+          "text": "THWACK",
+          "at": "impact"
+        }
+      ]
+    },
+    {
+      "id": "p5",
+      "layout": "half",
+      "camera": {
+        "shot": "closeup",
+        "azimuth": 150,
+        "elevation": 6,
+        "focus": [
+          "Rin.upper",
+          "Kaito.upper"
+        ],
+        "margin": 0.06
+      },
+      "characters": [
+        {
+          "name": "Rin",
+          "action": "headlocked",
+          "target": "Kaito",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "facing": 90
+        },
+        {
+          "name": "Kaito",
+          "action": "headlock",
+          "target": "Rin"
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Kaito",
+          "text": "Tap out, sweetheart."
+        },
+        {
+          "who": "Rin",
+          "text": "...Never."
+        }
+      ]
+    },
+    {
+      "id": "p6",
+      "layout": "half",
+      "camera": {
+        "shot": "low_angle",
+        "azimuth": 25,
+        "margin": 0.04
+      },
+      "characters": [
+        {
+          "name": "Kaito",
+          "action": "staggered",
+          "target": "Rin",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "inflict": [
+            {
+              "kind": "bruise",
+              "spot": "neck",
+              "size": 0.07
+            }
+          ]
+        },
+        {
+          "name": "Rin",
+          "action": "spinning_back_kick",
+          "aim": "neck",
+          "target": "Kaito"
+        }
+      ],
+      "sfx": [
+        {
+          "text": "BAM!",
+          "at": "impact"
+        }
+      ]
+    },
+    {
+      "id": "p7",
+      "layout": "wide",
+      "caption": "She takes the leg \u2014 and doesn't let go.",
+      "camera": {
+        "shot": "high_angle",
+        "azimuth": 30,
+        "margin": 0.05
+      },
+      "characters": [
+        {
+          "name": "Kaito",
+          "action": "leg_locked",
+          "target": "Rin",
+          "at": [
+            0.0,
+            0.0
+          ],
+          "facing": 90
+        },
+        {
+          "name": "Rin",
+          "action": "leg_lock",
+          "target": "Kaito"
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Kaito",
+          "text": "AAARGH! OKAY! OKAY!"
+        }
+      ]
+    },
+    {
+      "id": "p8",
+      "layout": "wide",
+      "caption": "Three down.",
+      "camera": {
+        "shot": "low_angle",
+        "azimuth": 10,
+        "margin": 0.04
+      },
+      "characters": [
+        {
+          "name": "Rin",
+          "action": "stand",
+          "target": "Jun",
+          "at": [
+            0.5,
+            0.3
+          ]
+        },
+        {
+          "name": "Kaito",
+          "action": "fallen",
+          "at": [
+            -0.7,
+            0.9
+          ],
+          "facing": 70
+        },
+        {
+          "name": "Goro",
+          "action": "clutch_stomach",
+          "target": "Rin",
+          "at": [
+            -1.9,
+            -1.2
+          ]
+        },
+        {
+          "name": "Jun",
+          "action": "stumble",
+          "target": "Rin",
+          "at": [
+            2.1,
+            -0.9
+          ]
+        }
+      ],
+      "dialogue": [
+        {
+          "who": "Rin",
+          "text": "Next."
+        },
+        {
+          "who": "Jun",
+          "text": "W-wait\u2014!"
+        }
+      ]
+    }
+  ]
+}

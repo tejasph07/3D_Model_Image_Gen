@@ -1,0 +1,242 @@
+<title>Animescene Fight Panels</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: a manga reading table. Finished pages first, then every panel opened up into its 3D staging. */
+:root {
+  --paper: #f4f4f1;
+  --sheet: #ffffff;
+  --ink: #15171b;
+  --ink-soft: #5a5f69;
+  --rule: #d9dad6;
+  --stage: #0e7aa3;          /* the 3D stage / blueprint layer */
+  --stage-soft: #e3f1f6;
+  --hit: #c8382a;            /* impacts and wounds */
+  --display: "Dela Gothic One", "Arial Black", system-ui, sans-serif;
+  --body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --s1: 4px; --s2: 8px; --s3: 14px; --s4: 22px; --s5: 36px; --s6: 60px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --paper: #111316; --sheet: #191c20; --ink: #eceae4; --ink-soft: #a3a7ae; --rule: #2c3036;
+  --stage: #4cc3e6; --stage-soft: #13303b; --hit: #f06a57; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --paper: #111316; --sheet: #191c20; --ink: #eceae4; --ink-soft: #a3a7ae; --rule: #2c3036;
+  --stage: #4cc3e6; --stage-soft: #13303b; --hit: #f06a57; color-scheme: dark }
+
+* { box-sizing: border-box }
+body { background: var(--paper); color: var(--ink); font: 15px/1.6 var(--body); margin: 0 }
+.wrap { max-width: 1240px; margin: 0 auto; padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: var(--s5) var(--s6) }
+header { display: grid; gap: var(--s3); padding-bottom: var(--s5); border-bottom: 3px solid var(--ink) }
+h1 { font: 400 clamp(34px, 6vw, 68px)/1.02 var(--display); margin: 0; letter-spacing: .01em; text-wrap: balance }
+h2 { font: 400 clamp(22px, 3vw, 30px)/1.15 var(--display); margin: 0; text-wrap: balance }
+h3 { font: 600 15px/1.3 var(--body); margin: 0 }
+.lede { max-width: 68ch; font-size: 17px; color: var(--ink-soft); margin: 0 }
+.lede b { color: var(--ink) }
+.label { font: 500 11px/1.2 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-soft) }
+.pipeline { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; font: 500 13px var(--mono) }
+.pipeline span { padding: 4px 10px; border: 1.5px solid var(--ink); border-radius: 2px; background: var(--sheet) }
+.pipeline span.s { border-color: var(--stage); color: var(--stage) }
+.pipeline i { color: var(--ink-soft); font-style: normal }
+nav.stories { display: flex; flex-wrap: wrap; gap: var(--s2); margin: var(--s5) 0 var(--s4) }
+nav.stories button { font: 400 16px var(--display); padding: 10px 16px; border: 2px solid var(--ink); background: var(--sheet);
+  color: var(--ink); cursor: pointer; border-radius: 2px }
+nav.stories button[aria-pressed="true"] { background: var(--ink); color: var(--paper) }
+button:focus-visible, a:focus-visible { outline: 3px solid var(--stage); outline-offset: 2px }
+section { display: grid; gap: var(--s4); margin-top: var(--s6) }
+.sechead { display: grid; gap: var(--s2) }
+.sechead p { margin: 0; max-width: 70ch; color: var(--ink-soft) }
+.pages { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: var(--s4) }
+.pages img { width: 100%; display: block; background: #fff; box-shadow: 0 1px 0 var(--rule), 0 10px 30px rgb(0 0 0 / .12) }
+.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 560px), 1fr)); gap: var(--s5) var(--s4) }
+.panel { display: grid; gap: var(--s3); min-width: 0 }
+.view { position: relative; aspect-ratio: 1216 / 832; background: var(--ink); overflow: hidden; border: 2px solid var(--ink) }
+.view img, .view canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block }
+.view canvas { cursor: grab; touch-action: none }
+.view .hint { position: absolute; left: 10px; bottom: 8px; font: 500 11px var(--mono); color: #cfe9f3; pointer-events: none;
+  background: rgb(0 0 0 / .45); padding: 2px 6px }
+.tabs { display: flex; flex-wrap: wrap; gap: 0; border: 1.5px solid var(--ink); width: fit-content; max-width: 100% }
+.tabs button { font: 500 12px var(--mono); padding: 6px 12px; border: 0; border-right: 1.5px solid var(--ink);
+  background: var(--sheet); color: var(--ink); cursor: pointer }
+.tabs button:last-child { border-right: 0 }
+.tabs button[aria-pressed="true"] { background: var(--stage); color: var(--sheet) }
+.meta { display: grid; gap: var(--s1) }
+.meta .cap { font-style: italic; color: var(--ink-soft) }
+.acts { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none }
+.acts li { font: 400 12px var(--mono); padding: 2px 8px; background: var(--stage-soft); color: var(--ink); border-radius: 2px }
+.cast { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 380px), 1fr)); gap: var(--s4) }
+.char { background: var(--sheet); border: 1.5px solid var(--rule); display: grid; min-width: 0 }
+.char img { width: 100%; display: block; background: #fff }
+.char div { padding: var(--s3); display: grid; gap: var(--s2); min-width: 0 }
+.char p { margin: 0; font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere }
+.wounds { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px }
+.wounds li { font: 400 12px var(--mono); border-left: 3px solid var(--hit); padding-left: 8px; overflow-wrap: anywhere }
+.how { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: var(--s4) }
+.how div { border-top: 3px solid var(--ink); padding-top: var(--s3); display: grid; gap: var(--s2) }
+.how p { margin: 0; color: var(--ink-soft); font-size: 14px }
+footer { margin-top: var(--s6); padding-top: var(--s4); border-top: 1.5px solid var(--rule); color: var(--ink-soft); font-size: 13px;
+  display: flex; flex-wrap: wrap; gap: var(--s3); justify-content: space-between }
+footer a { color: var(--stage) }
+code { font: 13px var(--mono); background: var(--stage-soft); padding: 1px 5px; border-radius: 2px }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="label">story → 3D stage → anime panels</span>
+    <h1>Animescene Fight Panels</h1>
+    <p class="lede">Every panel below was <b>staged in 3D first</b>: bodies posed with exact inverse kinematics, blows placed
+      on the body part they hit, reactions moved to where the blow landed. Only then did an anime SDXL model paint it,
+      guided by pose, depth and per-character regions. Each character's identity comes from its own generated turnaround sheet,
+      and wounds are drawn by code at a fixed spot on the body, so they come back identical in every later panel.</p>
+    <div class="pipeline" aria-label="Pipeline">
+      <span>story script</span><i>→</i><span class="s">3D stage &amp; IK</span><i>→</i><span class="s">pose · depth · regions</span><i>→</i>
+      <span>SDXL + ControlNet-Union</span><i>→</i><span>identity sheets</span><i>→</i><span>hires · detail</span><i>→</i><span>wounds · page layout</span>
+    </div>
+  </header>
+
+  <nav class="stories" id="storynav" aria-label="Stories"></nav>
+
+  <section id="pages-sec">
+    <div class="sechead"><span class="label">Finished pages</span><h2 id="story-title"></h2>
+      <p>Speech bubbles point at each speaker's head and sound effects sit beside the impact; both positions come from the 3D stage.</p></div>
+    <div class="pages" id="pages"></div>
+  </section>
+
+  <section>
+    <div class="sechead"><span class="label">Panel by panel</span><h2>The staging behind each panel</h2>
+      <p>Switch a panel to <b>3D stage</b> and drag to orbit around the solved scene; scroll or pinch to zoom. <b>Pose</b> and
+        <b>Depth</b> are the exact control images the generator received.</p></div>
+    <div class="panels" id="panels"></div>
+  </section>
+
+  <section>
+    <div class="sechead"><span class="label">Cast memory</span><h2>Identity sheets and recorded wounds</h2>
+      <p>Generated once per character. Every panel attends to the sheet inside that character's own 3D region only. Wounds are stored
+        as body-surface coordinates (bone, position along it, angle around it).</p></div>
+    <div class="cast" id="cast"></div>
+  </section>
+
+  <section>
+    <div class="sechead"><span class="label">How it works</span><h2>What the code guarantees, and what the model paints</h2></div>
+    <div class="how">
+      <div><h3>Contacts are geometry</h3><p>A palm strike places the heel of the hand on the stomach surface and dents it in the
+        depth map. A back-of-knee kick mounts the attacker behind the victim at the exact leg reach. Headlocks put the forearm under the throat.</p></div>
+      <div><h3>Reactions follow the blow</h3><p>Doubling over, stumbling, knee buckling and being knocked flying are solved
+        as the victim's pose and then moved so the struck part sits where the blow landed, never pulled toward the attacker.</p></div>
+      <div><h3>Identity per region</h3><p>Each pixel can attend only to its own character's turnaround sheet. Four fighters keep
+        four faces, outfits and palettes without bleeding into each other.</p></div>
+      <div><h3>Wounds are persistent decals</h3><p>Seeded patterns re-projected through the posed body, hidden when the spot faces
+        away or is covered. The image model is never asked to invent injuries.</p></div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Rendered on a 4-core CPU (bf16) with WAI-Illustrious-SDXL, ControlNet-Union ProMax and sdxl-vae-fp16-fix.</span>
+    <a href="https://github.com/tejasph07/3D_Model_Image_Gen/tree/ccr-6eb5bf0c-3h0b54" target="_blank" rel="noopener">Source code on GitHub</a>
+  </footer>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+<script>
+const STORIES = /*DATA*/null;
+const COLORS = [0xe0584a, 0x3f86d6, 0x46b57a, 0xe0a83a, 0xa66ad6, 0x39b7b7];
+const $ = (s, el = document) => el.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => { const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) { if (k === "text") e.textContent = v; else e.setAttribute(k, v); }
+  kids.forEach(k => k && e.append(k)); return e; };
+let viewers = [];
+
+function stageViewer(container, url) {
+  if (!window.THREE) { container.append(h("p", { class: "hint", text: "3D viewer unavailable" })); return null; }
+  const canvas = h("canvas"); container.append(canvas, h("span", { class: "hint", text: "drag to orbit · scroll to zoom" }));
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+  const scene = new THREE.Scene(); scene.background = new THREE.Color(0x15181d);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 0.85));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.75); sun.position.set(-2, 5, 3); scene.add(sun);
+  const grid = new THREE.GridHelper(12, 24, 0x3a6f86, 0x2a333d); scene.add(grid);
+  const cam = new THREE.PerspectiveCamera(40, 1216 / 832, 0.05, 100);
+  let target = new THREE.Vector3(), radius = 5, yaw = 0, pitch = 0.2, ready = false;
+  fetch(url).then(r => r.json()).then(data => {
+    const box = new THREE.Box3();
+    data.actors.forEach((a, i) => {
+      const mat = new THREE.MeshStandardMaterial({ color: COLORS[i % COLORS.length], roughness: 0.55 });
+      const wmat = new THREE.MeshStandardMaterial({ color: 0xd8dde3, roughness: 0.3, metalness: 0.4 });
+      a.prims.forEach(p => {
+        const A = new THREE.Vector3(...p.a), B = new THREE.Vector3(...p.b);
+        const m = p.part === "weapon" ? wmat : mat;
+        let mesh;
+        if (p.k === "sph" || A.distanceTo(B) < 1e-4) mesh = new THREE.Mesh(new THREE.SphereGeometry(p.r, 18, 12), m);
+        else {
+          mesh = new THREE.Mesh(new THREE.CapsuleGeometry(p.r, A.distanceTo(B), 6, 14), m);
+          mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), B.clone().sub(A).normalize());
+        }
+        mesh.position.copy(A.clone().add(B).multiplyScalar(0.5)); scene.add(mesh); box.expandByPoint(A); box.expandByPoint(B);
+      });
+    });
+    box.getCenter(target);
+    const c = data.camera, eye = new THREE.Vector3(...c.eye), off = eye.clone().sub(target);
+    radius = off.length(); yaw = Math.atan2(off.x, off.z); pitch = Math.asin(off.y / radius);
+    cam.fov = c.fov; cam.updateProjectionMatrix(); ready = true; draw();
+  });
+  function size() { const r = container.getBoundingClientRect(); renderer.setSize(r.width, r.height, false);
+    cam.aspect = r.width / Math.max(1, r.height); cam.updateProjectionMatrix(); }
+  function draw() { if (!ready) return; size();
+    cam.position.set(target.x + radius * Math.cos(pitch) * Math.sin(yaw), target.y + radius * Math.sin(pitch),
+      target.z + radius * Math.cos(pitch) * Math.cos(yaw)); cam.lookAt(target); renderer.render(scene, cam); }
+  let drag = null;
+  canvas.addEventListener("pointerdown", e => { drag = [e.clientX, e.clientY]; canvas.setPointerCapture(e.pointerId); canvas.style.cursor = "grabbing"; });
+  canvas.addEventListener("pointermove", e => { if (!drag) return; yaw -= (e.clientX - drag[0]) * 0.01;
+    pitch = Math.max(-0.2, Math.min(1.4, pitch + (e.clientY - drag[1]) * 0.008)); drag = [e.clientX, e.clientY]; draw(); });
+  canvas.addEventListener("pointerup", () => { drag = null; canvas.style.cursor = "grab"; });
+  canvas.addEventListener("wheel", e => { e.preventDefault(); radius = Math.max(0.8, Math.min(30, radius * (1 + e.deltaY * 0.001))); draw(); }, { passive: false });
+  return { draw, dispose() { renderer.dispose(); } };
+}
+
+function panelCard(p, key) {
+  const view = h("div", { class: "view" });
+  const modes = [["Art", "final"], ["3D stage", "stage"], ["Pose", "control_pose"], ["Depth", "control_depth"], ["Regions", "stage_debug"]]
+    .filter(([, k]) => p[k]);
+  const tabs = h("div", { class: "tabs", role: "group", "aria-label": `Views of panel ${p.id}` });
+  function show(k) {
+    view.replaceChildren();
+    if (k === "stage") { const v = stageViewer(view, p.stage); if (v) viewers.push(v); }
+    else view.append(h("img", { src: p[k], alt: `${p.id} ${k}`, loading: "lazy" }));
+    tabs.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.k === k)));
+  }
+  modes.forEach(([label, k]) => { const b = h("button", { type: "button", "data-k": k, id: `${key}-${p.id}-${k}`, text: label });
+    b.addEventListener("click", () => show(k)); tabs.append(b); });
+  show("final");
+  const acts = h("ul", { class: "acts" }); p.actions.forEach(a => acts.append(h("li", { text: a })));
+  const shot = p.camera && p.camera.shot ? `${p.camera.shot.replace("_", " ")} shot` : "";
+  return h("article", { class: "panel" }, view, tabs,
+    h("div", { class: "meta" }, h("h3", { text: `Panel ${p.id.toUpperCase()}` + (shot ? ` · ${shot}` : "") }),
+      p.caption ? h("p", { class: "cap", text: p.caption }) : null, acts));
+}
+
+function render(i) {
+  viewers.forEach(v => v.dispose()); viewers = [];
+  const s = STORIES[i];
+  $("#storynav").querySelectorAll("button").forEach((b, j) => b.setAttribute("aria-pressed", String(i === j)));
+  $("#story-title").textContent = s.title;
+  $("#pages").replaceChildren(...s.pages.map((p, j) => h("img", { src: p, alt: `${s.title}, page ${j + 1}` })));
+  $("#panels").replaceChildren(...s.panels.map(p => panelCard(p, s.key)));
+  $("#cast").replaceChildren(...s.cast.map(c => {
+    const w = h("ul", { class: "wounds" });
+    (c.injuries || []).forEach(j => w.append(h("li", { text: `${j.kind} · ${j.bone} t=${j.t} ∠${j.angle}° · from ${String(j.scene || "").split("/").pop()}` })));
+    return h("article", { class: "char" }, h("img", { src: c.sheet, alt: `${c.name} turnaround sheet`, loading: "lazy" }),
+      h("div", {}, h("h3", { text: c.name }), h("p", { text: c.tags }),
+        (c.injuries || []).length ? w : h("p", { text: "No recorded wounds." })));
+  }));
+  try { localStorage.setItem("story", String(i)); } catch (e) {}
+}
+
+STORIES.forEach((s, i) => { const b = h("button", { type: "button", id: `story-${s.key}`, text: s.title });
+  b.addEventListener("click", () => render(i)); $("#storynav").append(b); });
+let start = 0; try { start = Math.min(STORIES.length - 1, +(localStorage.getItem("story") || 0)); } catch (e) {}
+render(start);
+addEventListener("resize", () => viewers.forEach(v => v.draw()));
+</script>

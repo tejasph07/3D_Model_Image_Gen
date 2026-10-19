@@ -1,87 +1,149 @@
-# 3D Model Image Gen — text → grounded 3D scene → OpenPose
+# animescene — story scenes → grounded 3D → anime illustrations
 
-Turn dead-simple 3-word scene scripts into **physically consistent 3D
-scenes** of humanoids and common objects, rendered as **OpenPose BODY_25
-(+ hand) skeleton images** and JSON — ready to condition an image model
-(ControlNet-style) so the *first* generation is already physically right.
+Turns complicated story moments ("Akane brings her katana down on Ren, who
+catches it on his blade; beside them Mira's roundhouse kick snaps into the
+giant's jaw and sends him flying") into **one coherent, full-colour anime
+illustration** where every blow lands where it should.
 
-The point is grounding: image models fail at high kicks to the head,
-piggybacks, fireman's carries, riding a flying broom. Here those poses are
-solved with bone-length-exact IK, surface-accurate contacts, collision
-push-out, and a flat-ground constraint — so the language stays close to
-text (a novel-to-visualization pipeline an LLM can drive) while the math
-guarantees the physics.
+Image models alone can't do multi-character fights: limbs merge, punches
+miss, colours and outfits swap between people. This pipeline makes the
+*geometry* exact first and only then lets the image model paint:
 
 ```
-create,human_a,HUMAN
-create,chair_1,CHAIR
-infront,human_a,chair_1
-touch,human_a.right_palm,human_a.forehead
+story text ──(Claude, optional)──▶ scene JSON
+scene JSON ──▶ 3D stage: rigs, IK, contacts, hit reactions, collisions, camera
+           ──▶ controls: OpenPose (occlusion-aware) + depth + per-character masks
+           ──▶ SDXL anime model + ControlNet-Union (pose+depth)
+               + regional prompting (each character's prompt only paints its own 3D silhouette)
+           ──▶ hires pass ──▶ per-character detail passes (zoomed re-render of each fighter)
 ```
+
+## What the 3D stage guarantees
+
+* **Contacts are real.** A punch puts the knuckles on the target's face, a
+  kick puts the foot on the head (support foot planted), a block puts the
+  defender's blade *across* the attacker's blade at the contact point, a
+  spear point stops at the body surface.
+* **Reactions follow the blow.** `knocked_back` / `staggered` victims are
+  moved so the struck part is where the blow landed, a moment later along
+  the attack's direction, never pulled toward the attacker and never
+  intersecting the attacker's body.
+* **Placement by intent.** Pin one fighter per group; everyone else is placed
+  at their action's natural range (computed from both bodies' proportions),
+  side by side across the screen so silhouettes stay readable.
+* **Exact bone lengths, flat ground.** Analytic two-bone IK; grounded poses
+  re-solve after grounding so hand targets stay exact; airborne poses stay
+  airborne.
+* **Characters on the fly, consistent forever.** Describe someone loosely or
+  not at all; the designer fills in a coherent anime design (hair, eyes,
+  archetype outfit, weapon, body). The first time a character appears it gets
+  a generated **turnaround sheet** (front / side / back). Every later render
+  runs the sheet through the UNet and lets each pixel of that character's 3D
+  region attend to the sheet's features (*regional reference attention*), so
+  face, hair, outfit and weapon stay on-model across panels and never bleed
+  onto another fighter. Designs and sheets persist in `cast.json`; LoRAs can
+  be attached per character as well.
+* **Injuries are code, not prompts.** A wound is stored on the character as a
+  point on the body surface (bone, position along it, angle around it) plus a
+  seeded pattern. Blows record wounds at their exact 3D contact point; every
+  later panel re-projects them through the posed body, tests visibility
+  against the depth buffer and composites the identical cut / bruise /
+  bandage. The image model is never asked to draw injuries.
+* **Arms that look human.** Every arm that isn't landing a blow or holding
+  someone is placed from a library of natural shapes (guard, chin, chamber,
+  balance, counter-swing, flail, brace, cover, ...) defined in the chest frame
+  relative to the shoulder, in units of the model's own arm length, so the
+  elbow stays bent however the torso bends, twists or is re-grounded. The
+  renderer raises and protracts the clavicles as arms lift, and hands take a
+  shape (fist, relaxed, flat palm, grip, claw) instead of a flat T-pose hand.
+  A final pass pushes free hands out of any torso or head they sink into.
+* **Grappling and dirty fighting.** Headlocks, rear chokes, ankle locks,
+  knee strikes in the clinch, back-of-the-knee kicks, spinning back kicks,
+  palm strikes with an energy blast, every boxing punch — with reactions that
+  follow the blow (doubling over, clutching the stomach, stumbling, knee
+  buckling, being knocked flying). Soft-tissue hits dent the victim's body in
+  the depth control.
 
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
-python -m scene3d examples/quidditch_seeker.scene -o out/
-# -> out/quidditch_seeker.png (OpenPose skeleton render)
-# -> out/quidditch_seeker.json (2D keypoints + 3D joints + objects + camera)
+pip install -r requirements.txt          # or a conda env with pytorch (CPU or CUDA)
+python tools/fetch_models.py --dest models   # ~9 GB; --source dockerhub if HuggingFace is blocked
+export ANIMESCENE_MODELS=$PWD/models
+
+# 3D stage only (seconds, no model): control images + debug view
+python -m animescene stage scenes/shrine_clash.json -o out/shrine
+
+# full render
+python -m animescene render scenes/shrine_clash.json -o out/shrine -q high
+
+# design a character on the fly (saved to cast.json, reused by name)
+python -m animescene character Yui "pink-haired petite mage girl in a violet robe"
+
+# a whole multi-panel story -> manga pages (shared cast, persistent injuries)
+python -m animescene comic stories/alley_rin.json -o out/alley
+
+# story -> scene with Claude (needs ANTHROPIC_API_KEY), then render
+python -m animescene story "Kaze drops out of the storm onto Lena..." -o out/ambush --render
 ```
 
-Or pipe a scene in: `echo "create,a,HUMAN" | python -m scene3d - -o out/`.
+The scene format is documented in [SCENE_FORMAT.md](SCENE_FORMAT.md) — it is
+also the system prompt the story director uses, so an LLM can write scenes.
 
-The full language reference is in [LANGUAGE.md](LANGUAGE.md) — it is written
-to be pasted directly into an LLM prompt so a model can compile prose
-("she carries him over her shoulders through the door") into scripts.
+Each render writes `final.png` plus `base.png`, `hires.png`,
+`detail_*.png`, the control images, `stage_debug.png` (skeletons over depth
+and region masks) and `prompts.json`.
 
-## What the engine guarantees
+## Models
 
-- **Exact bone lengths** in every pose (analytic two-bone IK, never scaled).
-- **Surface contacts**: `poke,a.left_fingers,a.right_cheek` puts the index
-  fingertip *on* the cheek surface — fingers pick their shape from the verb
-  (poke = index, touch = four fingers, pinch = two, grab = wrap, punch = fist).
-- **Reach realism**: out-of-reach targets make the actor step in, hinge at
-  the hips, dip the knees — in that order, like a person.
-- **Order-sensitive semantics**: standing + touch-toes = fold at the hips;
-  sitting + touch-toes = reach along the ground.
-- **Flat ground, no clipping**: nothing sinks below y = 0; bodies push out
-  of each other; a hand-held sword tilts up instead of stabbing the floor.
-- **Weird-pose coverage**: handstand, bridge, splits, high kicks, chokes,
-  shoulder-sitting, piggyback, fireman/cradle carries, broom riding at
-  altitude — all covered by tests in `tests/`.
+| role | model |
+|---|---|
+| base | WAI-Illustrious-SDXL v15 (anime SDXL, danbooru-tag prompting) |
+| control | xinsir ControlNet-Union SDXL ProMax (OpenPose + depth in one net) |
+| VAE | sdxl-vae-fp16-fix |
 
-## Output format
+Quality presets (`-q`): `draft` (18 steps, no hires/detail), `standard`
+(+ detail), `high` (28 steps + 1.4× hires + detail). On a 4-core CPU
+(bf16, AMX) `high` takes ~30 min for a 4-character scene; a GPU does it in
+about a minute.
 
-- **PNG**: OpenPose BODY_25 skeletons in the standard limb colors + 21-point
-  hands, objects as gray wireframes, black background — ControlNet-friendly.
-- **JSON**: per person `pose_keypoints_2d` (25×3), `hand_left/right_keypoints_2d`
-  (21×3), full 3D joints; per object type/pose/anchors; camera intrinsics.
-
-## Repository layout
+## Layout
 
 ```
-scene3d/
-  parser.py    3-token DSL parser
-  skeleton.py  parametric human rig, FK, pose presets, body-part map
-  hands.py     verb-driven finger poses, OpenPose hand keypoints
-  objects.py   object library (chair, table, door, broom, sword, ...)
-  solver.py    command execution, reach strategy, macros, collisions, ground
-  ik.py        (in vecmath) analytic two-bone IK w/ pole vectors
-  camera.py    auto-framing perspective camera
-  render.py    OpenPose-style PNG renderer
-  openpose.py  JSON export
-  cli.py       command line
-examples/      ready-to-render scenes
-tests/         physical-plausibility test suite (pytest)
+animescene/
+  rig.py         anime-proportioned body, FK + two-bone IK
+  actions.py     action library (punch, kick, flying_kick, slash, thrust, block, leap_attack,
+                 knocked_back, staggered, dodge, cast, charge, grab, point, kneel, fallen, ...)
+  stage.py       placement, interaction-aware solving, hit alignment, collisions
+  camera.py      shot presets + automatic framing
+  raster.py      analytic ray caster (depth, instance ids, normals)
+  controls.py    OpenPose with occlusion, depth, region masks, debug view
+  characters.py  character designer, description parser, persistent cast
+  prompts.py     global / per-character / background prompts from the solved stage
+  diffusion.py   SDXL + ControlNet-Union sampler with regional cross-attention, img2img, inpaint
+  pipeline.py    base -> hires -> per-character detail
+  sheets.py      character turnaround sheets (identity references)
+  injuries.py    persistent wounds: body-surface anchors, seeded decals, occlusion tests
+  manga.py       page layout, narration boxes, speech bubbles, SFX
+  story.py       story text -> scene JSON via Claude; multi-panel story runner
+scenes/          single-scene examples
+stories/         multi-panel stories (alley fight, boxing title bout)
+showcase/        rendered results
+tests/           stage physics, prompts, regional-attention maths
+tools/           pose_gallery.py (render actions/pairs with VRM models from several angles),
+                 pair_sheet3d.py, action_sheet.py (pose inspection), fetch_models.py
 ```
 
-## Development
+## Tests
 
 ```bash
-pip install -r requirements.txt
-python -m pytest tests/ -q
+python -m pytest tests -q
 ```
 
-Tests assert the physics, not just the plumbing: bone lengths after every
-solve, no joint below the ground, contact gaps in centimeters, straddled
-knees on opposite sides of the broom, the kicker's support foot planted.
+The stage tests assert physics, not plumbing: bone lengths for every
+action, feet planted / airborne, fist-on-face and foot-on-head distances,
+crossed blades with the attacker's edge stopping before the defender's
+face, hit victims landing where the blow lands, no interpenetration in the
+four-fighter scene, everyone in frame, region masks partitioning the image.
+The regional-attention tests check that each pixel attends only to its own
+character's prompt and unowned pixels fall back to the scene prompt.

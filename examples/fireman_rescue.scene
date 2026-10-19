@@ -1,6 +1,0 @@
-# Firefighter carrying an unconscious person over the shoulders.
-create,rescuer,HUMAN
-create,victim,HUMAN
-fireman_carry,rescuer,victim
-look,rescuer,forward
-camera,three_quarter,scene

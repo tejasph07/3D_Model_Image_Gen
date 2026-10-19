@@ -1,0 +1,54 @@
+{
+  "title": "Clash at the burning shrine",
+  "story": "Akane brings her katana down on Ren, who catches it on his blade in a shower of sparks. Beside them, Mira's roundhouse kick snaps into Gorou's jaw and sends the giant flying backwards, greatsword and all.",
+  "setting": "burning shinto shrine courtyard at night, torii gate, stone lanterns, flying embers, fire, smoke",
+  "camera": {
+    "shot": "low_angle",
+    "azimuth": 28,
+    "margin": 0.03
+  },
+  "characters": [
+    {
+      "name": "Ren",
+      "description": "black-haired swordsman in a navy coat",
+      "archetype": "knight",
+      "gender": "male",
+      "action": "block",
+      "target": "Akane",
+      "at": [
+        -1.0,
+        0.0
+      ]
+    },
+    {
+      "name": "Akane",
+      "description": "red-haired swordswoman",
+      "archetype": "swordsman",
+      "gender": "female",
+      "action": "slash",
+      "style": "overhead",
+      "target": "Ren"
+    },
+    {
+      "name": "Gorou",
+      "archetype": "berserker",
+      "gender": "male",
+      "hair_color": "white",
+      "action": "knocked_back",
+      "target": "Mira",
+      "at": [
+        1.0,
+        -0.4
+      ]
+    },
+    {
+      "name": "Mira",
+      "archetype": "brawler",
+      "gender": "female",
+      "hair_color": "blonde",
+      "hair": "high ponytail",
+      "action": "kick",
+      "target": "Gorou"
+    }
+  ]
+}

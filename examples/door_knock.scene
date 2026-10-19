@@ -1,8 +1,0 @@
-# Knocking at a door while holding a lantern.
-create,visitor,HUMAN
-create,door_1,DOOR
-create,lamp_1,LANTERN
-infront,visitor,door_1
-punch,visitor.right_fist,door_1.center
-hold,visitor.left_hand,lamp_1
-camera,three_quarter,scene
