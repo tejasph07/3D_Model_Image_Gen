@@ -5,6 +5,12 @@ The ControlNet holds every outline of the render, and a moderate strength keeps 
 contacts and injuries come through; the model redraws shading, lines and surface detail. About 3-6 min per
 panel on 4 CPU cores at 768 px; weights (~5 GB) download from the Hugging Face Hub on first use, no account.
 Run it on the clean render, before bubbles and sound effects are lettered.
+
+`backend="space"`: the same pass on a free hosted GPU, no account - the public Hugging Face Space
+linoyts/edit_friendly_ddpm_inversion (owner-paid A10G; "edit-friendly DDPM inversion": the render is inverted
+and re-generated under the target prompt, which keeps the layout). ~15-30 s per panel, 512 x 512 working size
+(the panel is padded to a square and cropped back). A third party's Space: it can be paused or changed at any
+time, so the local path stays the fallback.
 """
 from __future__ import annotations
 
@@ -46,7 +52,34 @@ def prompt_for(spec: dict, beat: dict, panel: dict) -> str:
                                   *people, f"{act}, fight scene, dynamic", spec.get("setting", ""), spec.get("lighting", "")] if x)
 
 
-def stylize(src, dst, prompt, strength=0.5, steps=8, width=768, seed=1, control=0.85, log=print):
+SPACE = "linoyts/edit_friendly_ddpm_inversion"
+
+
+def stylize_space(src, dst, prompt, skip=50, cfg=12.0, seed=0, log=print):
+    from gradio_client import Client, handle_file
+    import tempfile
+    t0 = time.time()
+    im = Image.open(src).convert("RGB")
+    W, H = im.size
+    S = max(W, H)
+    sq = Image.new("RGB", (S, S), (0, 0, 0))
+    sq.paste(im, ((S - W) // 2, (S - H) // 2))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False).name
+    sq.resize((512, 512), Image.LANCZOS).save(tmp)
+    src_prompt = "3d render, cgi, " + prompt.split("anime illustration, ")[-1]
+    out = Client(SPACE, verbose=False).predict(handle_file(tmp), src_prompt, prompt, 100, 3.5, cfg, skip, seed, False, api_name="/edit")
+    res = Image.open(out).convert("RGB").resize((S, S), Image.LANCZOS)
+    res.crop(((S - W) // 2, (S - H) // 2, (S - W) // 2 + W, (S - H) // 2 + H)).save(dst)
+    log(f"[stylize/space] {Path(dst).name} {time.time() - t0:.0f} s")
+    return dst
+
+
+def stylize(src, dst, prompt, strength=0.5, steps=8, width=768, seed=1, control=0.85, log=print, backend="local"):
+    if backend == "space":
+        try:
+            return stylize_space(src, dst, prompt, log=log)
+        except Exception as e:  # paused / changed / busy: fall back to the local pipeline
+            log(f"[stylize/space] unavailable ({e}); running locally")
     import cv2
     import torch
     t0 = time.time()

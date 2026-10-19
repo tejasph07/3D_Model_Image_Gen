@@ -138,7 +138,7 @@ def panel_camera(S, beat, key, cam, size):
     return _Cam(eye, target, cam.get("fov", 35.0), size)
 
 
-def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None):
+def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None, stylize_backend="local"):
     """stylize: None, "all" or panel indices to pass through the img2img illustration step (stylize.py)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -224,7 +224,7 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None):
         for i in pick:
             p, pdir = panels[i]
             (pdir / "final.png").replace(pdir / "render.png")
-            ST.stylize(pdir / "render.png", pdir / "final.png", ST.prompt_for(spec, owners[i], p), log=log)
+            ST.stylize(pdir / "render.png", pdir / "final.png", ST.prompt_for(spec, owners[i], p), log=log, backend=stylize_backend)
     pages = compose_pages(spec, panels, out)
     log("pages: " + ", ".join(str(p) for p in pages))
     return pages
@@ -232,6 +232,7 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None):
 
 if __name__ == "__main__":
     import sys
-    opt = {a.split("=")[0]: a.split("=")[1] for a in sys.argv[3:] if a.startswith("--stylize=")}.get("--stylize")
+    kv = dict(a[2:].split("=", 1) for a in sys.argv[3:] if a.startswith("--") and "=" in a)
+    opt = kv.get("stylize")
     st = None if opt is None else ("all" if opt == "all" else [int(x) for x in opt.split(",")])
-    run(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], stylize=st)
+    run(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], stylize=st, stylize_backend=kv.get("stylize-backend", "local"))
