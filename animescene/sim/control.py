@@ -7,6 +7,7 @@ equality constraints, contacts keep bodies apart. Nothing is teleported.
 """
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass, field
 
 import mujoco
@@ -229,7 +230,10 @@ class Scene:
             I = self.tone[k]
             I += dt * (g * err / Ti - leak * I)
             fmax = m.actuator_forcerange[a.aids, 1]
-            pd = d.actuator_force[a.aids]
+            # the servo's own force from the state (not last step's actuator_force: resuming stays exact)
+            pd = np.clip(g * d.ctrl[a.aids] + m.actuator_biasprm[a.aids, 1] * d.qpos[a.qadr]
+                         + m.actuator_biasprm[a.aids, 2] * d.qvel[a.dadr[6:]], -fmax, fmax)
+            np.clip(I, -0.3 * fmax, 0.3 * fmax, out=I)  # holding effort, not a winding-up crush when blocked
             np.clip(I, -fmax - pd, fmax - pd, out=I)
             d.qfrc_applied[a.dadr[6:]] = I
 
@@ -677,7 +681,7 @@ def snapshot(S: Scene) -> dict:
                 gain=m.actuator_gainprm.copy(), bias=m.actuator_biasprm.copy(), t=S.t, held=set(getattr(S, "held", set())),
                 log=list(S.log), assists={k: dict(v) for k, v in getattr(S, "assists", {}).items()}, frames=list(S.frames),
                 tone={k: v.copy() for k, v in getattr(S, "tone", {}).items()},
-                warm=d.qacc_warmstart.copy(), qfrc_applied=d.qfrc_applied.copy(), xfrc_applied=d.xfrc_applied.copy(),
+                data=copy.copy(d),  # everything, derived quantities included: resuming is then bit-exact
                 extra={k: v for k, v in vars(S).items() if k in SNAP_EXTRA})
 
 
@@ -691,13 +695,14 @@ def restore(S: Scene, snap: dict):
     S.t, S.held, S.log = snap["t"], set(snap["held"]), list(snap["log"])
     S.assists = {k: dict(v) for k, v in snap["assists"].items()}
     S.frames = list(snap["frames"])
-    if "warm" in snap:  # the solver's warm start and the applied forces: resuming is then exact
-        d.qacc_warmstart[:], d.qfrc_applied[:], d.xfrc_applied[:] = snap["warm"], snap["qfrc_applied"], snap["xfrc_applied"]
     if snap.get("tone"):
         S.tone = {k: v.copy() for k, v in snap["tone"].items()}
     for k, v in snap.get("extra", {}).items():
         setattr(S, k, v)
-    mujoco.mj_forward(m, d)
+    if "data" in snap:  # the full state as it was, including what the controllers read last step
+        mujoco.mj_copyData(d, m, snap["data"])
+    else:
+        mujoco.mj_forward(m, d)
 
 
 class Reach:
