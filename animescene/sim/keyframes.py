@@ -50,7 +50,7 @@ class Touch:
     shape: str | None = None  # hand shape for the renderer ("grip", "flat", "fist", "pinch", ...)
     mutual: float = 0.0  # how much the touched body moves to meet it (0: it is posed by its own description)
     face_w: float = 0.5  # how firmly the facing holds, per unit weight
-    roll: tuple | None = None  # (bone, local axis, world dir or callable(S)) a second axis, fixing the turn about the normal
+    roll: tuple | None = None  # (bone, local axis, world dir or callable(S, touch)) a second axis, fixing the turn about the normal
 
     def side(self):
         return self.part[-1] if self.part[-2:] in ("_l", "_r") else None
@@ -90,8 +90,8 @@ def twist(who, side, other, spot, angle=60.0, normal="surface", weight=1.0):
     t = pinch(who, side, other, spot, normal, weight)
     fingers = np.array([1.0 if side == "l" else -1.0, 0.0, 0.0])  # hand bones point out along +-x in the T-pose
 
-    def rolled(S):
-        n = _normal(S, t)
+    def rolled(S, tt):  # tt: the touch as placed (renamed, turned) in the scene
+        n = _normal(S, tt)
         u = UP - n * (UP @ n)
         u /= np.linalg.norm(u)
         a = np.deg2rad(angle)
@@ -217,7 +217,7 @@ def _tasks_for(S, key: Key, actor: str, turn=1.0):
             if t.face is not None:
                 tasks.append((f"@axis:{t.face[0]}", (t.face[1], -n), t.face_w * t.weight * turn))
             if t.roll is not None:
-                w = t.roll[2](S) if callable(t.roll[2]) else np.asarray(t.roll[2], float)
+                w = t.roll[2](S, t) if callable(t.roll[2]) else np.asarray(t.roll[2], float)
                 w = w - n * (w @ n)  # only the turn about the normal
                 tasks.append((f"@axis:{t.roll[0]}", (np.asarray(t.roll[1], float), w / np.linalg.norm(w)), 0.25 * t.weight * turn))
         elif t.other == actor and t.mutual > 0:  # the touched body comes to meet it
@@ -486,6 +486,8 @@ def place_keys(keys: list, names: dict, origin=(0.0, 0.0), yaw=0.0) -> list:
             t2.who, t2.other = rn(t.who), rn(t.other)
             if not callable(t.normal) and not isinstance(t.normal, str):
                 t2.normal = rot(t.normal)
+            if t.roll is not None and not callable(t.roll[2]):
+                t2.roll = (t.roll[0], t.roll[1], rot(t.roll[2]))
             k2.touches.append(t2)
         for f in ("support", "posture", "lock", "stiff", "shapes"):
             setattr(k2, f, {rn(a): copy.deepcopy(v) for a, v in getattr(k, f).items()})
