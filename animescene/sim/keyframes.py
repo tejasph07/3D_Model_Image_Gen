@@ -49,6 +49,8 @@ class Touch:
     weight: float = 1.0
     shape: str | None = None  # hand shape for the renderer ("grip", "flat", "fist", "pinch", ...)
     mutual: float = 0.0  # how much the touched body moves to meet it (0: it is posed by its own description)
+    face_w: float = 0.5  # how firmly the facing holds, per unit weight
+    roll: tuple | None = None  # (bone, local axis, world dir or callable(S)) a second axis, fixing the turn about the normal
 
     def side(self):
         return self.part[-1] if self.part[-2:] in ("_l", "_r") else None
@@ -71,12 +73,31 @@ def press(who, side, other, spot, depth=0.02, normal="surface", weight=1.0):
 
 
 def pinch(who, side, other, spot, normal="surface", weight=1.0):
-    return Touch(who, f"palm_{side}", other, spot, "pinch", normal, 0.0, (f"{_limb('_' + side)}Hand", PALM_AXIS), weight, "pinch")
+    """Thumb and index tip closed on `spot` (an ear, a cheek); the palm turned loosely toward it."""
+    t = Touch(who, f"pinch_{side}", other, spot, "pinch", normal, 0.0, (f"{_limb('_' + side)}Hand", PALM_AXIS), weight, "pinch")
+    t.face_w = 0.15
+    return t
 
 
 def punch(who, side, other, spot, depth=0.02, normal="surface", weight=1.0):
     """Knuckles driven into `spot` along its normal (fist)."""
     return Touch(who, f"knuckles_{side}", other, spot, "punch", normal, -depth, None, weight, "fist")
+
+
+def twist(who, side, other, spot, angle=60.0, normal="surface", weight=1.0):
+    """Pinch `spot` and wring it: the hand turns about the surface normal by `angle` degrees from fingers-up
+    (an ear twisted, a cheek wrung). The fingers point along the rolled direction."""
+    t = pinch(who, side, other, spot, normal, weight)
+    fingers = np.array([1.0 if side == "l" else -1.0, 0.0, 0.0])  # hand bones point out along +-x in the T-pose
+
+    def rolled(S):
+        n = _normal(S, t)
+        u = UP - n * (UP @ n)
+        u /= np.linalg.norm(u)
+        a = np.deg2rad(angle)
+        return u * np.cos(a) + np.cross(n, u) * np.sin(a)
+    t.verb, t.roll = "twist", (f"{_limb('_' + side)}Hand", fingers, rolled)
+    return t
 
 
 def clamp(who, side, other, spot, normal, weight=1.0):
@@ -183,14 +204,18 @@ def place_root(S, actor, pos=None, yaw=0.0, pitch=0.0, roll=0.0):
 
 
 # ----------------------------------------------------------------------------- solving
-def _tasks_for(S, key: Key, actor: str):
+def _tasks_for(S, key: Key, actor: str, turn=1.0):
     tasks, allow, orient = [], [], []
     for t in key.touches:
         if t.who == actor:
             n = _normal(S, t)
             tasks.append((t.part, S.site(t.other, t.spot) + n * t.gap, t.weight))
             if t.face is not None:
-                tasks.append((f"@axis:{t.face[0]}", (t.face[1], -n), 0.5 * t.weight))
+                tasks.append((f"@axis:{t.face[0]}", (t.face[1], -n), t.face_w * t.weight * turn))
+            if t.roll is not None:
+                w = t.roll[2](S) if callable(t.roll[2]) else np.asarray(t.roll[2], float)
+                w = w - n * (w @ n)  # only the turn about the normal
+                tasks.append((f"@axis:{t.roll[0]}", (np.asarray(t.roll[1], float), w / np.linalg.norm(w)), 0.25 * t.weight * turn))
         elif t.other == actor and t.mutual > 0:  # the touched body comes to meet it
             n = _normal(S, t)
             tasks.append((t.spot, S.site(t.who, t.part) - n * t.gap, t.mutual * t.weight))
@@ -316,11 +341,11 @@ def solve_key(S: Scene, key: Key, rounds=4, iters=150, log=None, verbose=False, 
 def _solve_actor(S, key, a, posture, rounds, iters, log=None):
     """Two stages: without collisions (the limbs find which side of which body they belong: an arm can only
     wrap round a leg if it may pass it while searching), then with them until it stops improving."""
-    best, worse = np.inf, 0
+    best, worse, kept, turn = np.inf, 0, (np.inf, None), 1.0
     for stage, avoid in enumerate([False, False] + [True] * max(2, rounds + 4)):
         if avoid and worse >= 2:
             break
-        tasks, allow = _tasks_for(S, key, a)
+        tasks, allow = _tasks_for(S, key, a, turn)
         r = key.root.get(a, {})
         orient = [("hips", _quat(r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0)), r.get("hold", 0.1))] if r else None
         q, root, res = S.ik(a, tasks, posture=posture, w_post=key.stiff.get(a, 0.05), iters=iters, root=True,
@@ -331,12 +356,21 @@ def _solve_actor(S, key, a, posture, rounds, iters, log=None):
         S.d.qpos[S.actors[a].qadr] = q
         mujoco.mj_kinematics(S.m, S.d)
         if avoid:
-            err = max([v for k, v in report(S, key).items() if not k.startswith(("squeeze", "overlap"))] or [0.0])
+            rr = report(S, key)
+            err = max([v for k, v in rr.items() if not k.startswith(("squeeze", "overlap"))] or [0.0])
             worse = worse + 1 if err > best - 0.002 else 0
             best = min(best, err)
+            sc = score(rr)
+            if sc < kept[0]:  # stages can trade one fault for another: keep the best one seen
+                kept = (sc, S.d.qpos.copy())
+            if err > 0.03:  # the place matters more than the hand's exact turn: give way on the facing
+                turn *= 0.5
         if log:
             rr = report(S, key)
             log(f"   {a} stage {stage} avoid={avoid}: " + ", ".join(f"{k.split(':')[0]} {v:.3f}" for k, v in rr.items()))
+    if kept[1] is not None:
+        S.d.qpos[:] = kept[1]
+        mujoco.mj_kinematics(S.m, S.d)
 
 
 def report(S: Scene, key: Key) -> dict:

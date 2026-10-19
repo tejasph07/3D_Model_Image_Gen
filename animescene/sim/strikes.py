@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .keyframes import BLADE_AXIS as BLADE, UP, Key, Touch, clamp, grab, pinch, press, punch, squeeze
+from .keyframes import BLADE_AXIS as BLADE, UP, Key, Touch, clamp, grab, pinch, press, punch, squeeze, twist
 
 FEET = ["sole_l", "sole_r", "heel_l", "heel_r"]
 GUARD = dict(leftUpperArm_raise=-55, rightUpperArm_raise=-55, leftUpperArm_flex=45, rightUpperArm_flex=45,
@@ -81,10 +81,29 @@ def ear_pull(d=0.6):
     he rises on his toes, wincing, hands at her wrist."""
     v = dict(STAND, neck_bend=-25, head_bend=-10, spine_bend=-8, leftFoot_point=25, rightFoot_point=25, leftUpperLeg_flex=5,
              rightUpperLeg_flex=5, leftLowerLeg_flex=10, rightLowerLeg_flex=10)
+    pull = pinch("A", "r", "V", "ear_l")
+    pull.mutual = 1.0  # his head goes where the ear is pulled
     return [_std("ready", 0.0, d + 0.3),
-            _std("ear pull", 0.5, d, a=dict(STAND, spine_flex=0), v=v, order=("A", "V"),
-                 touches=[pinch("A", "r", "V", "ear_l"), grab("V", "l", "A", "wristblade_r", weight=0.6),
+            _std("ear pull", 0.5, d, a=dict(STAND, spine_flex=0), v=v, order=("V", "A", "V", "A"),
+                 touches=[pull, grab("V", "l", "A", "wristblade_r", weight=0.6),
                           grab("V", "r", "A", "forearm_r", weight=0.4)])]
+
+
+def ear_twist(d=0.5):
+    """She pinches his left ear and wrings it, hand turned over; he is dragged down to her shoulder height,
+    bent at the waist and knees, head bent away under the twist, both hands at her wrist, wincing. She stays
+    upright."""
+    v = dict(STAND, spine_flex=40, chest_flex=20, neck_bend=-30, head_bend=-15, neck_twist=-15, spine_bend=-12,
+             leftUpperLeg_flex=55, rightUpperLeg_flex=55, leftLowerLeg_flex=85, rightLowerLeg_flex=85,
+             leftShoulder_raise=20, rightShoulder_raise=20, leftUpperArm_raise=-30, rightUpperArm_raise=-30,
+             leftUpperArm_flex=60, rightUpperArm_flex=60, leftLowerArm_flex=80, rightLowerArm_flex=80)
+    a = dict(STAND, spine_flex=-3, leftUpperArm_raise=-60, leftUpperArm_flex=40, leftLowerArm_flex=100)
+    tw = twist("A", "r", "V", "ear_l", angle=70)
+    tw.mutual = 1.0
+    return [_std("ready", 0.0, d + 0.4),
+            _std("ear twist", 0.5, d, a=a, v=v, order=("V", "A", "V", "A"), v_pos=(0.12, d), v_yaw=195.0,
+                 lock={"A": ["spine", "chest"]}, stiff={"A": 0.3, "V": 0.2},
+                 touches=[tw, grab("V", "l", "A", "wristblade_r", weight=0.6), grab("V", "r", "A", "forearm_r", weight=0.4)])]
 
 
 def front_headlock(d=0.55):
@@ -181,5 +200,5 @@ def stumble(d=1.4):
     return [_std("stumble", 0.0, d, a=FIGHT, v=v)]
 
 
-MOVES = {f.__name__: f for f in (ready, stomach_punch, palm_strike, press_stomach, ear_pull, front_headlock, rear_choke,
+MOVES = {f.__name__: f for f in (ready, stomach_punch, palm_strike, press_stomach, ear_pull, ear_twist, front_headlock, rear_choke,
                                  knee_strike, hook, uppercut, roundhouse, spinning_back_kick, back_knee_kick, knee_buckle, stumble)}

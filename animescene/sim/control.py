@@ -30,6 +30,8 @@ def standard_sites(model: str) -> dict:
         hand = S[f"{L}Hand"]
         hp, hs = np.asarray(hand["pos"]), np.asarray(hand["size"])
         out[f"palm_{side}"] = (f"{L}Hand", (hp + np.array([0, -hs[1], 0])).tolist())  # palm faces -y at rest
+        # thumb-and-index tip: the front edge of the hand on the thumb side (thumb points +z in the T-pose)
+        out[f"pinch_{side}"] = (f"{L}Hand", (hp + np.array([sx * hs[0] * 1.0, -hs[1] * 0.3, hs[2] * 0.6])).tolist())
         out[f"knuckles_{side}"] = (f"{L}Hand", (hp + np.array([sx * hs[0] * 0.3, hs[1], 0])).tolist())
         fa = S[f"{L}LowerArm"]
         to = np.asarray(fa["to"])
