@@ -3,6 +3,7 @@
 import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils } from "@pixiv/three-vrm";
+import { bake, pairReport, floorReport, selfReport, fitColliders, linkSprings, contactDents } from "./physics.js";
 
 const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
 const loader = new GLTFLoader();
@@ -42,7 +43,7 @@ const CHILD = { hips: "spine", spine: "chest", chest: "upperChest", upperChest: 
 // surface along `dir` by `depth` with a smooth falloff over `radius`, raises a small bulge ring
 // around it (displaced flesh), and tilts the shading normals so the dent reads in toon shading.
 // Negative depth pulls the surface (a pinched ear, a grabbed cheek).
-const MAX_DENTS = 6;
+const MAX_DENTS = 12;
 const DENT_GLSL = `
 #ifdef SOFT_DENTS
   for (int i = 0; i < ${MAX_DENTS}; i++) {
@@ -57,7 +58,7 @@ const DENT_GLSL = `
     float w = depthFall * facing * dentMask;
     float f = x < 1.0 ? (1.0 - x * x) * (1.0 - x * x) : 0.0;
     float bulge = smoothstep(0.75, 1.05, x) * (1.0 - smoothstep(1.05, 1.7, x));
-    transformed += dir * dentDepth[i] * (f - 0.32 * bulge) * w;
+    transformed += dir * dentDepth[i] * (f - dentBulge[i] * bulge) * w;
     #if !defined(OUTLINE) && !defined(FLAT_SHADED)
       vec3 radial = length(lat) > 1e-6 ? lat / length(lat) : vec3(0.0);
       float slope = x < 1.0 ? dentDepth[i] / dentRad[i] * 4.0 * x * (1.0 - x * x) : 0.0;
@@ -109,6 +110,7 @@ function softBody(root, vrm) {  // install the dent hook on every material of a 
         dentDir: { value: Array.from({ length: MAX_DENTS }, () => new THREE.Vector3(0, 0, 1)) },
         dentRad: { value: new Array(MAX_DENTS).fill(0.05) },
         dentDepth: { value: new Array(MAX_DENTS).fill(0) },
+        dentBulge: { value: new Array(MAX_DENTS).fill(0.32) },
       };
       m.userData.dentU = U;
       const prev = m.onBeforeCompile, prevKey = m.customProgramCacheKey;
@@ -117,7 +119,7 @@ function softBody(root, vrm) {  // install the dent hook on every material of a 
         Object.assign(sh.uniforms, U);
         sh.vertexShader = sh.vertexShader
           .replace("void main() {", `#define SOFT_DENTS\nattribute float dentMask;\nuniform int dentCount;\nuniform vec3 dentPos[${MAX_DENTS}];
-uniform vec3 dentDir[${MAX_DENTS}];\nuniform float dentRad[${MAX_DENTS}];\nuniform float dentDepth[${MAX_DENTS}];
+uniform vec3 dentDir[${MAX_DENTS}];\nuniform float dentRad[${MAX_DENTS}];\nuniform float dentDepth[${MAX_DENTS}];\nuniform float dentBulge[${MAX_DENTS}];
 void main() {`)
           .replace("#include <skinning_vertex>", "#include <skinning_vertex>\n" + DENT_GLSL);
       };
@@ -167,6 +169,7 @@ function setDents(entry, dents) {  // dents in world space -> each mesh's local 
         const s = new THREE.Vector3(1, 0, 0).applyMatrix4(inv).sub(new THREE.Vector3(0, 0, 0).applyMatrix4(inv)).length();
         U.dentRad.value[i] = d.radius * s;
         U.dentDepth.value[i] = d.depth * s;
+        U.dentBulge.value[i] = d.bulge ?? 0.32;
       });
     });
   });
@@ -181,6 +184,8 @@ async function loadVRM(url, key = url) {
   vrm.scene.traverse((o) => { o.frustumCulled = false; });
   softBody(vrm.scene, vrm);
   vrm.scene.updateMatrixWorld(true);
+  const entry0 = { vrm, scene: vrm.scene };
+  fitColliders(entry0);  // body capsules from the rest-pose mesh (hair/cloth collide with them)
   // rest pose in world space (normalized bones: identity local rotation at rest)
   const rest = {};
   for (const name of Object.keys(vrm.humanoid.humanBones)) {
@@ -188,7 +193,7 @@ async function loadVRM(url, key = url) {
     if (!n) continue;
     rest[name] = { pos: n.getWorldPosition(new THREE.Vector3()), quat: n.getWorldQuaternion(new THREE.Quaternion()) };
   }
-  const entry = { vrm, rest, scene: vrm.scene };
+  const entry = { vrm, rest, scene: vrm.scene, colliders: entry0.colliders };
   cache.set(key, entry);
   return entry;
 }
@@ -338,6 +343,36 @@ function pose(entry, J, opts) {
   limb("l", "leftUpperArm", "leftLowerArm", "leftHand", "l_shoulder", "l_elbow", "l_wrist", "l_hand", true);
   limb("r", "rightUpperArm", "rightLowerArm", "rightHand", "r_shoulder", "r_elbow", "r_wrist", "r_hand", true);
 
+  handsAndFace(entry, opts);
+}
+
+// Pose straight from a physics simulation: every humanoid bone's world rotation relative to its rest
+// orientation (the simulator builds its bodies in the model's own rest frame) and the hips position.
+const BONE_ORDER = ["hips", "spine", "chest", "upperChest", "neck", "head",
+  "leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand", "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
+  "leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes", "rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes"];
+function poseBones(entry, opts) {
+  const { vrm } = entry;
+  vrm.scene.scale.setScalar(opts.scale || 1);
+  vrm.humanoid.resetNormalizedPose();
+  vrm.scene.updateMatrixWorld(true);
+  const N = (b) => vrm.humanoid.getNormalizedBoneNode(b);
+  const hips = N("hips");
+  hips.position.copy(hips.parent.worldToLocal(V(opts.root)));
+  hips.updateMatrixWorld(true);
+  for (const b of BONE_ORDER) {
+    const n = N(b);
+    if (!n || !entry.rest[b]) continue;
+    const q = opts.bones[b];
+    if (!q) continue;  // a bone the simulation doesn't drive rides on its parent
+    setWorldQuat(n, new THREE.Quaternion(q[0], q[1], q[2], q[3]).multiply(entry.rest[b].quat));
+  }
+  handsAndFace(entry, opts);
+}
+
+function handsAndFace(entry, opts) {
+  const { vrm } = entry;
+  const N = (b) => vrm.humanoid.getNormalizedBoneNode(b);
   // fingers: hand shapes (fist | relaxed | flat | grip), curl per segment, outer fingers curl more
   const SHAPES = {
     fist: { f: [1.45, 1.45, 1.3], spread: 0, thumb: [0.6, 0.6, 0.6] },
@@ -383,21 +418,24 @@ function pose(entry, J, opts) {
   vrm.scene.updateMatrixWorld(true);
 }
 
-function settleSprings(entry, motion, frames = 45) {
-  // let hair/cloth springs settle; the body arrives along its motion so hair trails behind it
-  const { vrm } = entry;
-  const hips = vrm.humanoid.getNormalizedBoneNode("hips");
-  const end = hips.position.clone();
-  const m = motion ? V(motion) : new THREE.Vector3();
-  const back = hips.parent.worldToLocal(hips.getWorldPosition(new THREE.Vector3()).sub(m.clone().multiplyScalar(0.35)));
-  if (vrm.springBoneManager) vrm.springBoneManager.reset();
+function settleSprings(entries, motions, frames = 60) {
+  // hair/cloth springs settle with every body (and the floor) in place; each body arrives along its
+  // motion so hair trails behind it
+  const st = entries.map((e, k) => {
+    const hips = e.vrm.humanoid.getNormalizedBoneNode("hips");
+    const end = hips.position.clone();
+    const m = motions[k] ? V(motions[k]) : new THREE.Vector3();
+    const back = hips.parent.worldToLocal(hips.getWorldPosition(new THREE.Vector3()).sub(m.clone().multiplyScalar(0.35)));
+    if (e.vrm.springBoneManager) e.vrm.springBoneManager.reset();
+    return { e, hips, end, back };
+  });
   for (let i = 0; i < frames; i++) {
-    const t = Math.min(1, i / (frames * 0.6));
-    hips.position.lerpVectors(back, end, t);
-    vrm.update(1 / 30);
+    const t = Math.min(1, i / (frames * 0.5));
+    for (const s of st) { s.hips.position.lerpVectors(s.back, s.end, t); s.e.scene.updateMatrixWorld(true); }
+    for (const s of st) s.e.vrm.update(1 / 60);
   }
-  hips.position.copy(end);
-  vrm.update(1 / 60);
+  for (const s of st) { s.hips.position.copy(s.end); s.e.scene.updateMatrixWorld(true); }
+  for (let i = 0; i < 20; i++) for (const s of st) s.e.vrm.update(1 / 60);  // come to rest at the final pose
 }
 
 function gradientSky(top, bottom) {
@@ -464,13 +502,26 @@ window.renderJob = async (job) => {
     seen[a.model] = (seen[a.model] || 0) + 1;  // the same model twice in a scene = two instances
     const entry = await loadVRM(a.model, `${a.model}#${seen[a.model]}`);
     entries.push(entry);
-    pose(entry, a.joints, a);
-    if (job.springs !== false) settleSprings(entry, a.motion);
+    if (a.rest) { entry.vrm.humanoid.resetNormalizedPose(); entry.vrm.scene.scale.setScalar(1); handsAndFace(entry, a); }
+    else if (a.bones) poseBones(entry, a);
+    else pose(entry, a.joints, a);
     entry.presses = a.dents;
     entry.scene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
     scene.add(entry.scene);
   }
+  if (job.springs !== false) {
+    linkSprings(entries, 0);
+    settleSprings(entries, job.actors.map((a) => a.motion));
+  } else for (const e of entries) e.vrm.update(0);  // normalized pose -> the raw skeleton the mesh uses
   for (const e of entries) { e.lastDents = measureDents(e, e.presses); setDents(e, e.lastDents); }
+  if (job.softContacts !== false && entries.length) {  // flesh gives where bodies press into it
+    const auto = contactDents(contacts(entries), 0.03);
+    entries.forEach((e, i) => {
+      e.autoDents = auto[i].slice(0, MAX_DENTS - e.lastDents.length);
+      e.lastDents = e.lastDents.concat(e.autoDents);
+      setDents(e, e.lastDents);
+    });
+  }
   const sl = scene.userData.shadowLight;
   if (sl) {  // fit the shadow camera around the actors, light direction kept
     const box = new THREE.Box3(); entries.forEach((e) => box.expandByObject(e.scene));
@@ -531,9 +582,26 @@ window.renderJob = async (job) => {
     hidden.forEach(([o, v]) => { o.visible = v; });
     scene.background = bg; scene.fog = fog;
   }
+  if (job.contacts !== false) out.contacts = contacts(entries, job.dumpVerts);
   for (const e of entries) scene.remove(e.scene);
   return out;
 };
+
+function contacts(entries, dump) {
+  const baked = entries.map((e) => bake(e, e.lastDents));
+  const r = { pairs: [], floor: [], self: [] };
+  if (dump) r.verts = baked.map((B) => {  // a sample of the skin (body/clothes only), for checking proxies
+    const o = [];
+    for (let i = 0; i < B.part.length; i += dump) if (B.kind[i] === 0 || B.kind[i] === 3) o.push([B.part[i], B.pos[i * 3], B.pos[i * 3 + 1], B.pos[i * 3 + 2], B.kind[i]]);
+    return o;
+  });
+  baked.forEach((A, i) => {
+    r.floor.push(floorReport(A, 0));
+    r.self.push(selfReport(A));
+    baked.forEach((B, k) => { if (k !== i) r.pairs.push({ a: i, b: k, ...pairReport(A, B) }); });
+  });
+  return r;
+}
 
 function isInside(o, root) { for (let p = o; p; p = p.parent) if (p === root) return true; return false; }
 
