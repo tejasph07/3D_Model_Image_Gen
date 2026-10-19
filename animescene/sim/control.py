@@ -351,7 +351,7 @@ class Scene:
     def _ik(self, actor: str, tasks: list, posture=None, w_post=0.02, iters=120, root=True, q0=None,
            orient: list | None = None, lock: tuple = (), root_cost: float = 1.0, root_rot: bool = True,
            avoid: bool = True, allow: tuple = (), clearance: float = 0.004, upright: float = 1.0,
-           hips_y: float | None = None) -> tuple:
+           hips_y: float | None = None, soft: float = 0.0) -> tuple:
         """Joint targets that put sites on points: tasks = [(site, target xyz, weight)], orient =
         [(body, target quat wxyz, weight)]. Respects joint limits. `root` lets the hips move/rotate too
         (the result's root pose is where the balance assist should take them). `lock`: joint name
@@ -387,6 +387,17 @@ class Scene:
                     jc = jacp[:, cols].copy()
                     jc[1] = 0.0
                     rows.append(jc * w)
+                    errs.append(e * w)
+                    continue
+                if site.startswith("@axis:"):  # turn a body so its local axis points along a world direction
+                    bid = m.body(P + site[6:]).id
+                    loc, want = (np.asarray(v, float) for v in target)
+                    cur = d.xmat[bid].reshape(3, 3) @ (loc / np.linalg.norm(loc))
+                    e = np.cross(cur, want / np.linalg.norm(want))  # rotation that brings cur onto want
+                    if cur @ want < 0 and np.linalg.norm(e) < 1e-3:  # opposite: any perpendicular axis
+                        e = np.cross(cur, [1.0, 0, 0]) if abs(cur[0]) < 0.9 else np.cross(cur, [0, 1.0, 0])
+                    mujoco.mj_jacBody(m, d, None, jacr, bid)
+                    rows.append(jacr[:, cols] * w)
                     errs.append(e * w)
                     continue
                 if site.startswith("@y:"):  # a height only: "@y:pelvis" -> that site's height to target[1]
@@ -426,6 +437,8 @@ class Scene:
                            ((n1.startswith(x.split(":")[0]) and n2.startswith(y.split(":")[0])) or
                             (n2.startswith(x.split(":")[0]) and n1.startswith(y.split(":")[0]))) for x, y in allow):
                         want = -0.002  # an intended contact: touching is the point
+                    elif soft and n1.split(":")[0] != n2.split(":")[0] and "world" not in (n1, n2):
+                        want = -soft  # two bodies in a hold: flesh may press in this far, no further
                     if c.dist >= want:
                         continue
                     nrm = c.frame[:3]  # from geom1 toward geom2
