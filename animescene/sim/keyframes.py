@@ -169,10 +169,15 @@ def _root_adr(S, actor):
     return S.m.jnt_qposadr[S.m.joint(actor + ":root").id]
 
 
+def _pos(S, actor, pos):
+    """A root position hint; a None height means the actor's current hips height."""
+    return np.array([pos[0], S.body(actor, "hips").xpos[1] if pos[1] is None else pos[1], pos[2]], float)
+
+
 def place_root(S, actor, pos=None, yaw=0.0, pitch=0.0, roll=0.0):
     adr = _root_adr(S, actor)
     if pos is not None:
-        S.d.qpos[adr:adr + 3] = pos
+        S.d.qpos[adr:adr + 3] = [pos[0], S.d.qpos[adr + 1] if pos[1] is None else pos[1], pos[2]]
     S.d.qpos[adr + 3:adr + 7] = _quat(yaw, pitch, roll)
     mujoco.mj_kinematics(S.m, S.d)
 
@@ -197,11 +202,12 @@ def _tasks_for(S, key: Key, actor: str):
     for site in key.support.get(actor, ()):
         tasks.append((f"@y:{site}", np.array([0.0, _floor_height(S, actor, site), 0.0]), 1.5))
     r = key.root.get(actor, {})
-    if r.get("pos") is not None:  # where the hips should be (a hint: the touches can move them a little)
-        tasks.append(("pelvis", np.asarray(r["pos"], float), r.get("pos_w", 0.5)))
+    if r.get("pos") is not None:  # where the hips should be (a hint: the touches can move them a little);
+        p = _pos(S, actor, r["pos"])  # height None: whatever the legs and supports make it
+        tasks.append(("pelvis", p, r.get("pos_w", 0.5)))
     if actor in key.balance:
         if r.get("pos") is not None:  # standing: feet under the hips, a stance apart, the weight between them
-            base = np.asarray(r["pos"], float) * np.array([1.0, 0, 1.0])
+            base = _pos(S, actor, r["pos"]) * np.array([1.0, 0, 1.0])
             left = _quat(r.get("yaw", 0.0))
             m = np.zeros(9)
             mujoco.mju_quat2Mat(m, left)
@@ -245,7 +251,7 @@ def _seeds(key: Key, a: str):
     out = [dict()]
     if r.get("pos") is not None:
         for dz in (-0.08, 0.08):
-            out.append(dict(pos=list(np.asarray(r["pos"], float) + [0, 0, dz])))
+            out.append(dict(pos=[r["pos"][0], r["pos"][1], r["pos"][2] + dz]))
     out.append(dict(pitch=r.get("pitch", 0.0) - 12))
     out.append(dict(pitch=r.get("pitch", 0.0) + 12))
     return out
@@ -257,7 +263,7 @@ def solve_key(S: Scene, key: Key, rounds=4, iters=150, log=None, verbose=False, 
     postures = {a: posed(S, a, base=np.zeros(len(S.actors[a].jids)), **key.posture.get(a, {})) for a in S.actors}
     for a, r in key.root.items():
         pos = r.get("pos")
-        place_root(S, a, None if pos is None else np.asarray(pos, float), r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0))
+        place_root(S, a, pos, r.get("yaw", 0.0), r.get("pitch", 0.0), r.get("roll", 0.0))
         S.d.qpos[S.actors[a].qadr] = postures[a]
     mujoco.mj_kinematics(S.m, S.d)
     for a in key.order:
@@ -270,7 +276,7 @@ def solve_key(S: Scene, key: Key, rounds=4, iters=150, log=None, verbose=False, 
             S.d.qpos[:] = start
             r = {**key.root.get(a, {}), **sd}
             if sd:
-                place_root(S, a, None if r.get("pos") is None else np.asarray(r["pos"], float), r.get("yaw", 0.0), r.get("pitch", 0.0),
+                place_root(S, a, r.get("pos"), r.get("yaw", 0.0), r.get("pitch", 0.0),
                            r.get("roll", 0.0))
             _solve_actor(S, key, a, postures[a], rounds, iters, log if verbose else None)
             sc = score({k: v for k, v in report(S, key).items()})

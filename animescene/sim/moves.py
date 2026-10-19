@@ -72,7 +72,7 @@ def leg_lock_guard():
             touches=[rest("V", "sole_l", "A", "hipbone_r")],
             support={"A": FEET, "V": LYING + ["sole_r"]}, balance=("A",),
             posture={"A": dict(STAND_A, **GUARD_HANDS), "V": v_guard},
-            root={"A": dict(pos=[0, 0.80, 0.38], yaw=0, pos_w=0.5, hold=1.0),
+            root={"A": dict(pos=[0, None, 0.38], yaw=0, pos_w=0.5, hold=1.0),
                   "V": dict(pos=[0, 0.12, 1.0], yaw=180, pitch=-90, pos_w=1.5, hold=1.5)}),
         Key(t=0.6, name="grab", order=("V", "A"),
             touches=[grab("A", "l", "V", "shin_l"), grab("A", "r", "V", "ankle_l", normal=HER_RIGHT),
@@ -82,7 +82,7 @@ def leg_lock_guard():
             posture={"A": dict(STAND_A, leftUpperLeg_flex=35, rightUpperLeg_flex=35, leftLowerLeg_flex=45, rightLowerLeg_flex=45,
                                spine_flex=25, chest_flex=10, neck_flex=25),
                      "V": v_guard},
-            root={"A": dict(pos=[0, 0.80, 0.38], yaw=0, pos_w=1.0, hold=1.0),
+            root={"A": dict(pos=[0, None, 0.38], yaw=0, pos_w=1.0, hold=1.0),
                   "V": dict(pos=[0, 0.12, 1.0], yaw=180, pitch=-90, pos_w=1.5, hold=1.5)}),
         Key(t=1.4, name="wrap", order=("V", "A"),
             touches=[clamp("A", "r", "V", "achilles_l", normal=-UP), tuck("A", "armpit_r", "V", "ankle_l", gap=-0.06),
@@ -91,7 +91,7 @@ def leg_lock_guard():
             lock={"V": ("leftUpperLeg", "leftLowerLeg")}, stiff={"A": 0.15, "V": 0.3},
             posture={"A": dict(STAND_A, spine_flex=20, chest_flex=5, neck_flex=20),
                      "V": dict(v_guard, leftUpperLeg_flex=60, leftLowerLeg_flex=20)},
-            root={"A": dict(pos=[0, 0.84, 0.38], yaw=0, pos_w=0.5, hold=1.0),
+            root={"A": dict(pos=[0, None, 0.38], yaw=0, pos_w=0.5, hold=1.0),
                   "V": dict(pos=[0, 0.12, 1.0], yaw=180, pitch=-90, pos_w=1.5, hold=1.5)}),
         Key(t=2.4, name="sit", order=("V", "A"),
             touches=[clamp("A", "r", "V", "achilles_l", normal=-UP), tuck("A", "armpit_r", "V", "ankle_l", gap=-0.06),
@@ -105,4 +105,53 @@ def leg_lock_guard():
         _final(3.4),
         _break(4.0),
     ]
+    return keys
+
+
+def leg_lock_kick():
+    """Both standing; he throws a front kick at her right ribs, she catches it (forearm under the calf by the
+    Achilles, ankle tucked under her armpit, left palm on his shin), drives forward so he falls on his back,
+    and finishes as from the guard."""
+    stance_v = dict(leftUpperLeg_flex=15, rightUpperLeg_flex=15, leftLowerLeg_flex=25, rightLowerLeg_flex=25,
+                    leftFoot_point=-10, rightFoot_point=-10, spine_flex=6, **GUARD_HANDS)
+    kick_v = dict(stance_v, leftUpperLeg_flex=85, leftLowerLeg_flex=10, leftFoot_point=-25, spine_flex=-5)
+    caught = [clamp("A", "r", "V", "achilles_l", normal=-UP), tuck("A", "armpit_r", "V", "ankle_l", gap=-0.06),
+              grab("A", "l", "V", "shin_l")]
+    keys = [
+        Key(t=0.0, name="stance", order=("A", "V"), stiff={"A": 0.15, "V": 0.15},
+            support={"A": FEET, "V": FEET}, balance=("A", "V"),
+            posture={"A": dict(STAND_A, **GUARD_HANDS), "V": stance_v},
+            root={"A": dict(pos=[0, None, 0.0], yaw=0, pos_w=0.5, hold=1.0),
+                  "V": dict(pos=[0, None, 1.15], yaw=180, pos_w=0.5, hold=1.0)}),
+        Key(t=0.35, name="kick", order=("A", "V"), stiff={"A": 0.15, "V": 0.3},
+            support={"A": FEET, "V": ["sole_r", "heel_r"]}, balance=("A", "V"),
+            lock={"V": ("leftUpperLeg", "leftLowerLeg")},
+            posture={"A": dict(STAND_A, **GUARD_HANDS), "V": kick_v},
+            root={"A": dict(pos=[0, None, 0.0], yaw=0, pos_w=0.5, hold=1.0),
+                  "V": dict(pos=[0.08, None, 1.10], yaw=180, pos_w=0.5, hold=1.0, stance=0.0)}),
+        Key(t=0.7, name="catch", order=("V", "A"), stiff={"A": 0.15, "V": 0.3}, touches=caught,
+            support={"A": FEET, "V": ["sole_r", "heel_r"]}, balance=("A", "V"),
+            lock={"V": ("leftUpperLeg", "leftLowerLeg")},
+            posture={"A": dict(STAND_A, spine_flex=15, neck_flex=15), "V": dict(kick_v, spine_flex=5, leftUpperLeg_flex=80)},
+            root={"A": dict(pos=[0, None, 0.1], yaw=0, pos_w=0.5, hold=1.0),
+                  "V": dict(pos=[0.08, None, 1.05], yaw=180, pos_w=0.5, hold=1.0, stance=0.0)}),
+        Key(t=1.1, name="drive", order=("V", "A"), stiff={"A": 0.15, "V": 0.3}, touches=caught,
+            support={"A": FEET}, balance=("A",),
+            lock={"V": ("leftUpperLeg", "leftLowerLeg")},
+            posture={"A": dict(STAND_A, spine_flex=25, neck_flex=15),
+                     "V": dict(ON_BACK, leftUpperLeg_flex=80, leftLowerLeg_flex=10, rightUpperLeg_flex=30, rightLowerLeg_flex=40)},
+            root={"A": dict(pos=[0, None, 0.35], yaw=0, pos_w=0.5, hold=1.0),
+                  "V": dict(pos=[0.05, 0.62, 1.1], yaw=180, pitch=-50, pos_w=1.5, hold=1.5)}),
+        Key(t=1.6, name="down", order=("V", "A"), stiff={"A": 0.15, "V": 0.3}, touches=caught,
+            support={"A": FEET, "V": LYING + ["heel_r"]}, balance=("A",),
+            lock={"V": ("leftUpperLeg", "leftLowerLeg")},
+            posture={"A": dict(STAND_A, spine_flex=20, chest_flex=5, neck_flex=20),
+                     "V": dict(ON_BACK, leftUpperLeg_flex=60, leftLowerLeg_flex=20, rightUpperLeg_flex=20, rightLowerLeg_flex=30)},
+            root={"A": dict(pos=[0, None, 0.38], yaw=0, pos_w=0.5, hold=1.0),
+                  "V": dict(pos=[0, 0.12, 1.0], yaw=180, pitch=-90, pos_w=1.5, hold=1.5)}),
+    ]
+    sit, fin, brk = leg_lock_guard()[3:]
+    for k, t in ((sit, 2.6), (fin, 3.6), (brk, 4.2)):
+        k.t = t
+        keys.append(k)
     return keys
