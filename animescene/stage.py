@@ -147,8 +147,11 @@ class Stage:
 
     @staticmethod
     def _is_hit_victim(t: Actor, attacker: Actor) -> bool:
+        # a body blow that the victim folds around is aimed at the folded body itself
+        folded = t.action == "doubled_over" and attacker.action == "punch" and (
+            attacker.params.get("style") == "body" or attacker.params.get("aim") in ("stomach", "body", "gut"))
         return (t.action in HIT_REACTIONS and attacker.target == t.name and attacker.action not in REACTIONS
-                and attacker.action not in HOLDS)
+                and attacker.action not in HOLDS and not folded)
 
     def _proxy(self, t: Actor, attacker: Actor) -> dict:
         """The victim standing (pre-hit) where it was struck, facing the attacker."""
@@ -193,8 +196,10 @@ class Stage:
             r_part = {"head": t.char.body.head_r, "neck": t.char.body.r["neck"], "chest": t.char.body.r["chest"],
                       "spine": t.char.body.r["waist"], "pelvis": t.char.body.r["pelvis"]}[part]
             held = bool(att.out.press)
-            goal = impact + unit(motion) * (0.28 if t.action == "knocked_back" else (r_part if held else 0.08))
-            delta = goal - t.joints[part]
+            goal = impact + unit(motion) * (0.28 if t.action == "knocked_back" else 0.08)
+            # a contact made on the reacting body itself (palm/fist sunk in) is exact already: the
+            # attacker stepped to it, so only resolve interpenetration
+            delta = v(0, 0, 0) if held else goal - t.joints[part]
             if t.action != "knocked_back" or t.out is None or not t.out.airborne:
                 delta[1] = 0.0
             else:  # lifted by the blow, not launched into orbit
@@ -207,6 +212,12 @@ class Stage:
             # keep flying along the blow until the bodies no longer pass through each other
             step = unit(v(motion[0], 0, motion[2])) * 0.05
             tol = -0.06 if t.action == "doubled_over" else 0.0  # a folded body may lean onto its attacker
+            if held or t.action == "doubled_over":
+                # folded over the arm: the head and shoulders pass outside the striking arm, not into the
+                # attacker's chest (the blow came from that side)
+                side = att.F @ v(1 if att.out.reach is None or att.out.reach[0].startswith("r") else -1, 0, 0)
+                step = unit(side * 0.85 + unit(v(motion[0], 0, motion[2])) * 0.3) * 0.03
+                tol = 0.0
             hr = t.char.body.head_r + att.char.body.head_r
             for _ in range(30):
                 heads = np.linalg.norm(t.joints["head"] + delta - att.joints["head"]) - hr

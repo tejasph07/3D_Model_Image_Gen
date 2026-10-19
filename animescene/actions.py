@@ -322,11 +322,11 @@ def punch(c: ActionCtx) -> ActionOut:
     other = "r" if hand == "l" else "l"
     low = style == "body" or c.p("aim") in ("stomach", "body", "gut")
     # body shots drop the level and slip the head to the outside of the target's (folding) body
-    pel = _pel(c, 0, -0.16 if low else -0.07, 0.06)
+    pel = _pel(c, 0, -0.1 if low else -0.07, 0.06)
     twist = {"straight": -22, "jab": 12, "hook": -34, "uppercut": -18, "body": -24}[style]
     sl = (-1 if hand == "r" else 1)  # lean away from the punching side
-    pose = PoseParams(pelvis=pel, pelvis_rot=(twist, 14 if low else 8, 10 * sl if low else 0),
-                      chest_rot=(twist * 0.7, 14 if low else 10, 12 * sl if low else 0), look_at=c.tj("head"))
+    pose = PoseParams(pelvis=pel, pelvis_rot=(twist, 10 if low else 8, 8 * sl if low else 0),
+                      chest_rot=(twist * 0.7, 8 if low else 10, 10 * sl if low else 0), look_at=c.tj("head"))
     pose.feet = _feet(c, (-0.08, 0.2), (0.13, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
     aim = c.aim("stomach" if style == "body" else ("head" if not low else c.p("aim")))
     tb = c.target_body
@@ -1200,8 +1200,8 @@ def _palm_distance(c: ActionCtx) -> float:
         doc="Open palm driven into the target (default the stomach); style: energy (with an energy blast) | plain.")
 def palm_strike(c: ActionCtx) -> ActionOut:
     H = c.H
-    pel = _pel(c, 0, -0.15, 0.07)  # low stance, head slipped outside the target's folding body
-    pose = PoseParams(pelvis=pel, pelvis_rot=(-24, 12, -10), chest_rot=(-14, 8, -12), look_at=c.tj("head"))
+    pel = _pel(c, 0, -0.1, 0.07)  # set stance, head slipped outside the target's folding body
+    pose = PoseParams(pelvis=pel, pelvis_rot=(-24, 10, -8), chest_rot=(-14, 6, -10), look_at=c.tj("head"))
     pose.feet = _feet(c, (-0.11, 0.22), (0.14, -0.2), (0, 0.2, 1), (0.4, 0.1, 1))
     aim = c.aim("stomach")
     part = "chest" if c.p("aim") == "chest" else "stomach"
@@ -1228,18 +1228,20 @@ def palm_strike(c: ActionCtx) -> ActionOut:
 @action("doubled_over", doc="Just took a blow to the gut: folded around it, lifted onto the toes, mouth open.")
 def doubled_over(c: ActionCtx) -> ActionOut:
     H = c.H
-    lift = c.p("lift", 0.03) * H
-    pel = _pel(c, 0, -0.03, -0.04) + v(0, lift, 0)
-    # phase "impact": the fist/palm is still buried in the gut, the body only starting to curl around it
-    # (the classic impact frame); "after": folded right over
+    lift = c.p("lift", 0.0) * H
+    # folded at the hips around the blow (references: torso near horizontal, head at waist height),
+    # rear pushed back over the heels, knees soft and turned in, feet flat. "impact": still folding
+    # (fist buried, ~60 degrees); "after": all the way over (~85 degrees)
     held = c.p("_by") in ("palm_strike", "punch", "press_stomach")
     phase = c.p("phase", "impact" if held else "after")
-    fold = (24, 22, -16) if phase == "impact" else (30, 30, -18)
+    fold = (40, 22, -30) if phase == "impact" else (52, 30, -40)
+    pel = _pel(c, 0, -0.07, -0.09) + v(0, lift, 0)
     pose = PoseParams(pelvis=pel, pelvis_rot=(0, fold[0], 0), chest_rot=(0, fold[1], 0), head_rot=(0, fold[2], 0),
                       grounded=lift <= 0)
     ah = c.body.ankle_h
-    pose.feet["l"] = Limb(v(-0.08 * H, ah + lift * 0.6, -0.14 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
-    pose.feet["r"] = Limb(v(0.08 * H, ah + lift * 0.9, -0.04 * H), v(0, 0.3, 1), v(0, -0.85, 0.5))
+    # knees bent forward and slightly in (pigeon-toed buckle)
+    pose.feet["l"] = Limb(v(-0.075 * H, ah + lift * 0.6, -0.02 * H), v(0.25, 0.1, 1), v(0.15, -0.2, 1))
+    pose.feet["r"] = Limb(v(0.075 * H, ah + lift * 0.9, 0.04 * H), v(-0.25, 0.1, 1), v(-0.15, -0.2, 1))
     tb = c.target_body
     if c.p("_by") == "knee_strike" and tb is not None:
         # held in a clinch: the head is dragged down to the captor's chest, knees sagging
@@ -1261,7 +1263,7 @@ def doubled_over(c: ActionCtx) -> ActionOut:
     # the gut), one hand clutches at that forearm; the other goes to the belly beside the blow
     J = _solve(c, pose)
     Rc = c.rig.chest_R
-    belly = J["spine"] * 0.6 + J["chest"] * 0.4 + Rc @ v(0, 0, c.body.r["waist"] + 0.02 * H)
+    belly = J["spine"] * 0.7 + J["pelvis"] * 0.3 + Rc @ v(0, 0, c.body.r["waist"] + 0.02 * H)
     by = c.p("_by")
     if c.target is not None and by in ("palm_strike", "punch", "press_stomach"):
         side = "r" if by == "palm_strike" else "r"
@@ -1555,6 +1557,13 @@ def _surface(c: ActionCtx, aim: np.ndarray, part: str) -> tuple:
         return aim + n * (tb.head_r if tb else 0.11) * 0.35, -n
     axis = unit(c.tj("neck") - c.tj("pelvis"))
     me = unit(-v(aim[0], 0, aim[2]))  # from the target toward me
+    if c.target_origin is not None and c.to_local is not None:
+        # the front of the torso is where the target faces (a folded belly faces down-forward), not
+        # whichever side happens to point at me
+        o = np.asarray(c.target_origin, float)
+        tf = c.to_local(o + c.t_fwd) - c.to_local(o)
+        if tf @ me > 0.2:
+            me = unit(me * 0.35 + unit(tf) * 0.65)
     n = me - axis * (me @ axis)
     n = unit(n) if np.linalg.norm(n) > 1e-6 else me
     r = (tb.r["chest"] if part == "chest" else tb.r["waist"]) if tb else 0.08
