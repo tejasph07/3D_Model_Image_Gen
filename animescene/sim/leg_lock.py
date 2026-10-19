@@ -34,6 +34,41 @@ def _gap(S, g1, g2):
     return float(mujoco.mj_geomDistance(S.m, S.d, S.m.geom(g1).id, S.m.geom(g2).id, 0.5, None))
 
 
+def _back_off_scoop(S):
+    S.scoop = max(0, S.scoop - 1)  # the arm comes back out a step and goes round again
+
+
+def _retry_until(D, cond, progress, back_off, limit, stall=1.5, step=0.02):
+    """Like _until, but a skill that stops making progress (progress(S) unchanged for `stall` s) backs off
+    one step and tries again, the way a person re-adjusts a grip that isn't going in."""
+    t_end, last, since = D.S.t + limit, progress(D.S), D.S.t
+    while D.S.t < t_end:
+        D.run(step)
+        if cond(D.S):
+            return True
+        p = progress(D.S)
+        if p != last:
+            last, since = p, D.S.t
+        elif D.S.t - since > stall:
+            back_off(D.S)
+            last, since = progress(D.S), D.S.t
+    return False
+
+
+def _step_to(D, side, goal, extra, posture, allow, T=1.2, clear=0.08, tries=3, tol=0.04):
+    """A step onto `goal`; if the foot lands short, another (smaller) step from where it is."""
+    from .control import Step
+    S = D.S
+    for _ in range(tries):
+        st = Step(S, "A", side, goal, T=T, clear=clear)
+        D.trackers.pop("A", None)
+        D.track("A", lambda S, st=st: st.tasks(S) + extra(S), T=T + 0.4, posture=posture, root=True, root_rot=False,
+                w_post=0.03, speed=4.0, allow=allow)
+        if _until(D, lambda S, st=st: st.done(S, tol), T + 0.4):
+            return True
+    return False
+
+
 def _until(D, cond, limit, step=0.02):
     """Run until cond(S) holds (or `limit` seconds pass). Returns whether it held."""
     t_end = D.S.t + limit
@@ -380,11 +415,11 @@ def lying_start(attacker="fem_vroid", victim="Sakurada_Fumiriya", log=print) -> 
                  rightUpperLeg_flex=35, rightLowerLeg_flex=60, rightUpperLeg_abduct=30, leftUpperLeg_flex=60, leftLowerLeg_flex=70)
     place(S, "V", q=lieV)
     hA = S.body("A", "hips").xpos
-    hb = S.site("A", "hipbone_r")  # his left hip in line with her right hip bone: the leg pushes straight
-    place(S, "V", dz=hA[2] + 0.60 - S.site("V", "hip_l")[2], dx=hb[0] - S.site("V", "hip_l")[0])
-    # his left leg: sole on the front of her right hip bone (solved for his leg joints only)
-    fw = np.array([0, 0, 1.0])
-    foot_at = S.site("A", "hipbone_r") + fw * 0.05  # the sole flat against the front of her hip
+    fw, rt = np.array([0, 0, 1.0]), np.array([-1.0, 0, 0])  # her front, her right
+    # his foot frames on the outer front of her right hip (his leg along her right side); his hip in line with it
+    foot_at = S.site("A", "hipbone_r") + fw * 0.04 + rt * 0.08
+    place(S, "V", dz=hA[2] + 0.60 - S.site("V", "hip_l")[2], dx=foot_at[0] - S.site("V", "hip_l")[0])
+    # his left leg: sole on her hip (solved for his leg joints only)
     others = ("spine", "chest", "neck", "head", "Shoulder", "Arm", "Hand", "right")
     # sole flat on her: toes up along her front, heel below
     flat = lambda p: [("sole_l", p, 1.0), ("toes_l", p + UP * 0.10 + fw * 0.01, 0.6), ("heel_l", p - UP * 0.07 + fw * 0.01, 0.6)]  # noqa: E731
@@ -416,8 +451,12 @@ def _her_right(S):
 
 def _armpit_pocket(S):
     """Where his ankle belongs in the lock: tucked under her right armpit, beside her ribs (not in front of
-    her belly), his toes past her back."""
-    return S.site("A", "armpit_r") + _her_right(S) * 0.05 + _fwd(S) * 0.04 - UP * 0.10
+    her belly), his toes past her back - but never further from his hip than his straight leg reaches."""
+    p = S.site("A", "armpit_r") + _her_right(S) * 0.05 + _fwd(S) * 0.04 - UP * 0.10
+    hip = S.site("V", "hip_l")
+    reach = 0.97 * (np.linalg.norm(S.site("V", "knee_l") - hip) + np.linalg.norm(S.site("V", "ankle_l") - S.site("V", "knee_l")))
+    d = p - hip
+    return hip + d * min(1.0, reach / np.linalg.norm(d))
 
 
 def _draw_to_pocket(S, lead=0.06):
@@ -511,14 +550,16 @@ def wrap_leg(R: Result, log=print) -> Result:
         t = [("hand_l", S.site("A", "hand_l") + _toward_goal(S), 1.0)]  # the left hand keeps the leg up
         if ("rightLowerArm", "leftLowerLeg") not in S.held:
             t.append(("wristblade_r", way[S.scoop], 1.0))
-        else:  # clamped: the forearm draws the foot in beside her right ribs, under the armpit
-            t[0] = ("hand_l", S.site("A", "hand_l"), 0.3)
-            t.append(("wristblade_r", _draw_to_pocket(S), 1.0))
+            if S.scoop == 2:  # under the Achilles the forearm turns in across her front: elbow bent at her side
+                t.append(("hand_r", _hand_across(S), 0.5))
+        else:  # clamped: the forearm holds the leg where it is (it reaches her armpit as she goes down)
+            t[0] = ("hand_l", S.site("A", "hand_l"), 0.5)
+            t += [("wristblade_r", S.site("A", "wristblade_r"), 0.5), ("hand_r", _hand_across(S), 0.5)]
         return t
 
     def grip(S):
         if ("rightLowerArm", "leftLowerLeg") not in S.held and S.scoop == 2 and \
-                _gap(S, "A:rightLowerArm", "V:leftLowerLeg") < 0.006 and S.site("A", "wristblade_r")[1] < S.site("V", "achilles_l")[1]:
+                _gap(S, "A:rightLowerArm", "V:leftLowerLeg") < 0.010 and S.site("A", "wristblade_r")[1] < S.site("V", "achilles_l")[1]:
             S.grip("A", "rightLowerArm", "V", "leftLowerLeg")
             S.held.add(("rightLowerArm", "leftLowerLeg"))
         return False
@@ -526,9 +567,10 @@ def wrap_leg(R: Result, log=print) -> Result:
     D.when(grip, lambda S: None, once=False)
     stand = posed(S, "A", **sym(UpperLeg_flex=30, LowerLeg_flex=40, Foot_point=-12), spine_flex=15)
     S.hs = _ground_height(S, "A", stand)
-    D.track("A", tasks, T=2.5, posture=stand, root=True, root_rot=False, plant=FEET, w_post=0.04, speed=4.0, allow=allow)
-    ok = _until(D, lambda S: ("rightLowerArm", "leftLowerLeg") in S.held, 2.5)
-    _until(D, lambda S: np.linalg.norm(S.site("V", "ankle_l") - _armpit_pocket(S)) < 0.05, 1.5)  # foot into the armpit
+    D.track("A", tasks, T=8.0, posture=stand, root=True, root_rot=False, plant=FEET, w_post=0.04, speed=4.0, allow=allow)
+    ok = _retry_until(D, lambda S: ("rightLowerArm", "leftLowerLeg") in S.held, lambda S: S.scoop, _back_off_scoop, 6.0)
+    D.trackers.pop("A", None)
+    D.track("A", tasks, T=0.5, posture=stand, root=True, root_rot=False, plant=FEET, w_post=0.04, speed=4.0, allow=allow)
     D.run(0.3)  # settle with the forearm clamped under the Achilles
     R.marks["wrapped"] = S.t
     log(f"[leg_lock] {'wrapped' if ok else 'NOT wrapped'} at t={S.t:.2f}: ankle {S.site('V', 'ankle_l').round(3)} "
@@ -573,15 +615,12 @@ def sit_into_lock(R: Result, log=print) -> Result:
     goal = hipc + along * 0.28 + left_of * 0.06
     goal[1] = S.site("A", "sole_l")[1]
     stand = posed(S, "A", **sym(UpperLeg_flex=35, LowerLeg_flex=45, Foot_point=-15), spine_flex=15)
-    st = Step(S, "A", "l", goal, T=1.2, clear=0.08)
-    D.track("A", lambda S: st.tasks(S) + clamp(S), T=1.6, posture=stand, root=True, root_rot=False, w_post=0.03, speed=4.0,
-            allow=allow)
-    ok = _until(D, st.done, 1.6)
+    ok = _step_to(D, "l", goal, clamp, stand, allow)
     R.marks["stepped"] = S.t
     log(f"[leg_lock] {'stepped in' if ok else 'step NOT done'} at t={S.t:.2f}: sole_l off {np.round(S.site('A', 'sole_l') - goal, 3)} "
         f"hips {S.body('A', 'hips').xpos.round(3)}")
 
-    # -------------------------------------------------------------- sit: squat to the bottom, then roll back onto the seat
+    # -------------------------------------------------------------- sit: squat to the bottom, then sit down behind the heels
     low = posed(S, "A", **sym(UpperLeg_flex=110, LowerLeg_flex=140, Foot_point=-20), spine_flex=25, neck_flex=10)
     sitA = posed(S, "A", **sym(UpperLeg_flex=75, LowerLeg_flex=90, Foot_point=10), spine_flex=10, neck_flex=10)
     D.trackers.pop("A", None)
@@ -589,28 +628,32 @@ def sit_into_lock(R: Result, log=print) -> Result:
             w_post=0.03, speed=3.0, allow=allow)
     _until(D, lambda S: S.site("A", "pelvis")[1] < 0.34, 1.2)
     log(f"[leg_lock] squat bottom at t={S.t:.2f}: pelvis {S.site('A', 'pelvis').round(3)}")
-    # her seat goes down and back to the floor; the feet are free to slide out in front
-    p0 = S.site("A", "pelvis").copy()
-    seat = p0 - _fwd(S) * 0.03
+    # she lets herself down onto her seat behind her heels: gravity takes her, the legs control it (the
+    # assist gives almost no lift here, so nothing holds her in the air)
+    heels = (S.site("A", "heel_l") + S.site("A", "heel_r")) / 2
+    seat = heels - _fwd(S) * 0.12
     seat[1] = seat_h
-    t0, T = S.t, 0.8
+    p0, t0, T = S.site("A", "pelvis").copy(), S.t, 0.8
+    S.assists["A"]["lmax"] = 0.05 * S.actors["A"].mass * 9.81
 
     def sit(S):
         u = min_jerk((S.t - t0) / T)
         return clamp(S) + [("pelvis", p0 + (seat - p0) * u, 1.0)]
 
     D.trackers.pop("A", None)
-    D.track("A", sit, T=T + 0.6, posture=sitA, root=True, root_rot=False, w_post=0.03, speed=3.0, allow=allow)
+    D.track("A", sit, T=T + 1.0, posture=sitA, root=True, root_rot=False, balance=0.0, w_post=0.03, speed=3.0,
+            allow=allow)  # feet free: they slide out in front as the seat goes down
     on_seat = lambda S: any(c[0] == "hips" and c[1] == "world" for c in S.contacts("A"))  # noqa: E731
-    ok = _until(D, on_seat, T + 0.6)
+    ok = _until(D, on_seat, T + 1.0)
     D.run(0.3)
+    S.assists["A"]["lmax"] = 0.25 * S.actors["A"].mass * 9.81
     # scoot in: feet on the floor in front, she lifts her seat a little and draws it toward him, sets it down
     dist = lambda S: np.linalg.norm((S.site("A", "pelvis") - hipc) * np.array([1, 0, 1]))  # noqa: E731
     for _ in range(3):
-        if dist(S) < 0.70:
+        if dist(S) < 0.68:
             break
         p0 = S.site("A", "pelvis").copy()
-        p1 = p0 + along * -min(0.15, dist(S) - 0.66)  # toward him (along points from him to her)
+        p1 = p0 + along * -min(0.15, dist(S) - 0.64)  # toward him (along points from him to her)
         t0 = S.t
 
         def scoot(S, p0=p0, p1=p1, t0=t0):
@@ -622,10 +665,25 @@ def sit_into_lock(R: Result, log=print) -> Result:
                 allow=allow)
         D.run(0.9)
         log(f"   scoot at t={S.t:.2f}: pelvis to his hips {dist(S):.2f}")
+    # seated: the outside (right) leg comes up and its sole goes onto his left hip bone
+    on_hip = _foot_on_hip
+    sr0, t0, seat_now = S.site("A", "sole_r").copy(), S.t, S.site("A", "pelvis").copy()
+
+    def foot_up(S):
+        u = min_jerk((S.t - t0) / 1.0)
+        goal = _within_reach(S, "hip_r", on_hip(S), 0.70)
+        return clamp(S) + [("sole_r", sr0 + (goal - sr0) * u + UP * 0.12 * np.sin(np.pi * u), 1.0),
+                           ("pelvis", seat_now, 3.0)]
+
+    D.trackers.pop("A", None)
+    D.track("A", foot_up, T=1.6, posture=sitA, root=True, root_rot=False, plant=("sole_l", "heel_l"), balance=0.0, w_post=0.03,
+            speed=3.0, allow=allow)
+    _until(D, lambda S: S.t > t0 + 1.0 and np.linalg.norm(S.site("A", "sole_r") - on_hip(S)) < 0.05, 1.6)
     R.marks["sat"] = S.t
     log(f"[leg_lock] {'sat' if ok else 'NOT sat'} at t={S.t:.2f}: pelvis {S.site('A', 'pelvis').round(3)} "
         f"his ankle {S.site('V', 'ankle_l').round(3)} her armpit {S.site('A', 'armpit_r').round(3)} "
-        f"pelvis to his hips {np.linalg.norm((S.site('A', 'pelvis') - hipc) * np.array([1, 0, 1])):.2f}")
+        f"pelvis to his hips {np.linalg.norm((S.site('A', 'pelvis') - hipc) * np.array([1, 0, 1])):.2f} "
+        f"right sole to his hip {np.linalg.norm(S.site('A', 'sole_r') - on_hip(S)):.3f}")
     return R
 
 
@@ -641,60 +699,33 @@ def _pitched(S, deg, f=None):
     return q
 
 
-def finish_lock(R: Result, log=print) -> Result:
-    """Seated with his foot clamped: she lies back (the leg straightens across her), her right leg comes
-    over his thigh and the sole lands on his left hip bone, her left foot slides under the thigh to behind
-    his buttock, knees pinch; her left hand leaves the shin and closes on her right wrist (gable grip);
-    then she arches - hips forward, shoulders back - and his ankle is bent against her forearm."""
+LOCK_ALLOW = (("A:rightLowerArm", "V:leftLowerLeg"), ("A:rightUpperArm", "V:leftLowerLeg"), ("A:rightUpperArm", "V:leftFoot"),
+              ("A:rightHand", "V:leftLowerLeg"), ("A:leftHand", "V:leftLowerLeg"), ("A:upperChest", "V:leftFoot"),
+              ("A:chest", "V:leftFoot"), ("A:upperChest", "V:leftLowerLeg"), ("A:chest", "V:leftLowerLeg"),
+              ("A:rightFoot", "V:hips"), ("A:leftFoot", "V:hips"), ("A:rightLowerLeg", "V:leftUpperLeg"),
+              ("A:leftLowerLeg", "V:leftUpperLeg"), ("A:rightUpperLeg", "V:leftUpperLeg"), ("A:leftUpperLeg", "V:leftUpperLeg"),
+              ("A:leftFoot", "V:leftUpperLeg"), ("A:hips", "V:leftLowerLeg"), ("A:hips", "V:leftUpperLeg"),
+              ("A:leftHand", "A:rightLowerArm"), ("A:leftHand", "A:rightHand"), ("A:rightFoot", "V:leftUpperLeg"))
+
+
+def lie_back(R: Result, log=print) -> Result:
+    """Seated with his foot clamped under her right armpit: her left hand lets go of the shin and she lies
+    back, square to him - the clamp goes back with her chest, so his knee straightens and his leg lies
+    across her."""
     S = R.scene
     D = Director(S)
     D.trackers, D.watch = {}, []
-    r_th = S.m.geom("V:leftUpperLeg").size[0]
-    r_ath = S.m.geom("A:rightUpperLeg").size[0]
-    allow = (("A:rightLowerArm", "V:leftLowerLeg"), ("A:rightUpperArm", "V:leftLowerLeg"), ("A:rightUpperArm", "V:leftFoot"),
-             ("A:rightHand", "V:leftLowerLeg"), ("A:leftHand", "V:leftLowerLeg"), ("A:upperChest", "V:leftFoot"),
-             ("A:chest", "V:leftFoot"), ("A:upperChest", "V:leftLowerLeg"), ("A:chest", "V:leftLowerLeg"),
-             ("A:rightFoot", "V:hips"), ("A:leftFoot", "V:hips"), ("A:rightLowerLeg", "V:leftUpperLeg"),
-             ("A:leftLowerLeg", "V:leftUpperLeg"), ("A:rightUpperLeg", "V:leftUpperLeg"), ("A:leftUpperLeg", "V:leftUpperLeg"),
-             ("A:leftFoot", "V:leftUpperLeg"), ("A:hips", "V:leftLowerLeg"), ("A:hips", "V:leftUpperLeg"),
-             ("A:leftHand", "A:rightLowerArm"), ("A:leftHand", "A:rightHand"), ("A:rightFoot", "V:leftUpperLeg"))
-    lieA = posed(S, "A", **sym(UpperLeg_flex=70, LowerLeg_flex=70, Foot_point=10), spine_flex=10, neck_flex=25)
-
-    def thigh_mid(S):
-        return S.site("V", "hip_l") * 0.45 + S.site("V", "knee_l") * 0.55
-
-    def outside(S):
-        o = S.site("V", "outerthigh_l") - thigh_mid(S)
-        o -= UP * (o @ UP)
-        return o / np.linalg.norm(o)
-
-    def behind(S):  # under his thigh, at the back of his buttock, on the floor
-        crotch = (S.site("V", "hip_l") + S.site("V", "hip_r")) / 2
-        b = S.site("V", "glute_l") * 0.6 + crotch * 0.4
-        b[1] = S.m.geom("A:leftFoot").size[1] + 0.01
-        return b
-
-    S.over = False
-
-    def legs(S):
-        tm = thigh_mid(S)
-        if not S.over:  # her right knee comes up and over his thigh first
-            t = [("knee_r", tm + UP * (r_th + 0.20) + outside(S) * 0.05, 1.0)]
-            if S.site("A", "knee_r")[1] > tm[1] + r_th + 0.12:
-                S.over = True
-        else:
-            t = [("sole_r", S.site("V", "hipbone_l") + UP * 0.02, 1.0),
-                 ("knee_r", tm + UP * (r_th + r_ath + 0.02) + outside(S) * 0.04, 0.4)]
-        return t + [("sole_l", behind(S), 0.8), ("knee_l", tm - outside(S) * (r_th + r_ath + 0.01), 0.3)]
-
-    # the clamp moves with her trunk: the forearm stays where it is relative to her upper chest
+    allow = LOCK_ALLOW
+    # as she lies back the clamp brings his ankle into the pocket under her right armpit (and keeps it there,
+    # moving with her chest): the forearm's place, in her upper chest's frame
     Rc = S.d.body("A:upperChest").xmat.reshape(3, 3)
-    clamp_local = Rc.T @ (S.site("A", "wristblade_r") - S.d.body("A:upperChest").xpos)
-
-    def hold(S):
-        b = S.d.body("A:upperChest")
-        return [("wristblade_r", b.xpos + b.xmat.reshape(3, 3) @ clamp_local, 0.8)]
-
+    wb_goal = _armpit_pocket(S) + (S.site("A", "wristblade_r") - S.site("V", "ankle_l"))
+    # a hold, not a crush: her arm holds the leg with part of its strength (the grip does the holding)
+    S.strength("A", 0.5, ("rightShoulder", "rightUpperArm", "rightLowerArm"))
+    # on the floor she needs no balance help: the assist only steers lightly (its torque could wedge her into him)
+    S.assist("A", True, pos=S.d.mocap_pos[S.actors["A"].mocap].copy(), quat=S.d.mocap_quat[S.actors["A"].mocap].copy(),
+             stiff=0.15, max_force=0.3, max_torque=40, max_lift=0.1)
+    S.clamp_local = Rc.T @ (wb_goal - S.d.body("A:upperChest").xpos)  # see _clamp_hold
     seat = S.site("A", "pelvis").copy()  # she stays sitting where she is: the legs reach, the body doesn't slide
     seat[1] = min(seat[1], 0.2)
     # -------------------------------------------------------------- lie back: his leg straightens across her
@@ -708,20 +739,86 @@ def finish_lock(R: Result, log=print) -> Result:
     q_back = _pitched(S, 60, to_him)  # square to him, lying back: the leg straightens across her
     back = posed(S, "A", **sym(UpperLeg_flex=60, LowerLeg_flex=80, Foot_point=10), spine_flex=0, chest_flex=-5,
                  upperChest_flex=0, neck_flex=35)  # a long back, chin tucked to watch him
-    D.track("A", lambda S: hold(S) + [("pelvis", seat, 1.5)], T=2.0, posture=back, root=True, root_rot=True, root_cost=1.0,
-            plant=FEET, balance=0.0,
-            w_post=0.04, speed=1.5, allow=allow, orient=[("hips", q_back, 1.0), ("upperChest", q_back, 0.8)], upright=0.0)
+    D.track("A", lambda S: _clamp_hold(S) + [("pelvis", seat, 1.5), ("sole_r", _foot_on_hip(S), 1.0)], T=2.0, posture=back, root=True, root_rot=True, root_cost=1.0,
+            plant=("sole_l", "heel_l"), balance=0.0, w_post=0.04, speed=1.5, allow=allow, orient=[("hips", q_back, 1.0), ("upperChest", q_back, 0.8)], upright=0.0)
     D.run(2.0)
     R.marks["reclined"] = S.t
     kne = S.site("V", "knee_l")
-    log(f"[leg_lock] lay back at t={S.t:.2f}: pelvis {S.site('A', 'pelvis').round(3)} pelvis up {S.d.body('A:hips').xmat.reshape(3, 3)[:, 1].round(2)} "
+    log(f"[leg_lock] lay back at t={S.t:.2f}: right sole off his hip {np.linalg.norm(S.site('A', 'sole_r') - _foot_on_hip(S)):.3f} ankle off the armpit pocket {np.linalg.norm(S.site('V', 'ankle_l') - _armpit_pocket(S)):.3f} pelvis {S.site('A', 'pelvis').round(3)} pelvis up {S.d.body('A:hips').xmat.reshape(3, 3)[:, 1].round(2)} "
         f"his knee {kne.round(3)} (flex {np.rad2deg(S.q('V')[[S.m.joint(j).name for j in S.actors['V'].jids].index('V:leftLowerLeg.flex')]):.0f} deg)")
-    D.trackers.pop("A", None)
+    S.seat, S.q_back = seat, q_back
+    return R
+
+
+def _within_reach(S, root_site, target, reach):
+    """target, or the nearest point to it her limb can reach from root_site (it doesn't drag her body)."""
+    o = S.site("A", root_site)
+    d = target - o
+    return o + d * min(1.0, reach / max(np.linalg.norm(d), 1e-6))
+
+
+def _foot_on_hip(S):
+    """Her outside (right) sole on the front of his left hip bone."""
+    return S.site("V", "hipbone_l") + UP * 0.02 + _her_right(S) * 0.02
+
+
+def _hand_across(S):
+    """Her right hand in front of her sternum: the forearm runs across her front from under his Achilles,
+    the elbow bent at her side (where the left hand will join it for the gable grip)."""
+    c = S.d.body("A:upperChest").xmat.reshape(3, 3)
+    return S.site("A", "sternum") + c[:, 2] * 0.16 - c[:, 1] * 0.10
+
+
+def _clamp_hold(S):
+    """The forearm stays where it is relative to her upper chest (the clamp moves with her trunk), the hand
+    across her front."""
+    b = S.d.body("A:upperChest")
+    return [("wristblade_r", b.xpos + b.xmat.reshape(3, 3) @ S.clamp_local, 0.8), ("hand_r", _hand_across(S), 0.5)]
+
+
+def finish_lock(R: Result, log=print) -> Result:
+    """Lying back with his leg across her: her right leg comes over his thigh and the sole lands on his left hip bone, her left foot slides under the thigh to behind
+    his buttock, knees pinch; her left hand leaves the shin and closes on her right wrist (gable grip);
+    then she arches - hips forward, shoulders back - and his ankle is bent against her forearm."""
+    S = R.scene
+    D = Director(S)
+    D.trackers, D.watch = {}, []
+    r_th = S.m.geom("V:leftUpperLeg").size[0]
+    r_ath = S.m.geom("A:rightUpperLeg").size[0]
+    allow = LOCK_ALLOW
+    lieA = posed(S, "A", **sym(UpperLeg_flex=70, LowerLeg_flex=70, Foot_point=10), spine_flex=10, neck_flex=25)
+
+    def thigh_mid(S):
+        return S.site("V", "hip_l") * 0.45 + S.site("V", "knee_l") * 0.55
+
+    def outside(S):
+        o = S.site("V", "outerthigh_l") - thigh_mid(S)
+        o -= UP * (o @ UP)
+        return o / np.linalg.norm(o)
+
+    def behind(S):  # her inside foot: under his thigh, hooked behind it toward his buttock (as far as she reaches)
+        crotch = (S.site("V", "hip_l") + S.site("V", "hip_r")) / 2
+        b = S.site("V", "glute_l") * 0.6 + crotch * 0.4
+        reach = S.site("A", "hip_l") + (b - S.site("A", "hip_l")) * min(1.0, 0.62 / np.linalg.norm(b - S.site("A", "hip_l")))
+        reach[1] = S.m.geom("A:leftFoot").size[1] + 0.01
+        return reach
+
+    sl0, t0 = S.site("A", "sole_l").copy(), S.t
+
+    def legs(S):  # outside sole stays on his hip; the inside foot is lifted and placed under his thigh, behind
+        tm = thigh_mid(S)  # it; the knees pinch the thigh
+        u = min_jerk((S.t - t0) / 1.2)
+        foot = sl0 + (behind(S) - sl0) * u + UP * 0.10 * np.sin(np.pi * u)
+        return [("sole_r", _foot_on_hip(S), 1.0), ("knee_r", tm + outside(S) * (r_th + r_ath + 0.01) + UP * 0.03, 0.3),
+                ("sole_l", foot, 0.8), ("knee_l", tm - UP * (r_th + r_ath + 0.01), 0.3 * u)]
+
+    seat, q_back = S.seat, S.q_back
+    hold = _clamp_hold
     D.track("A", lambda S: legs(S) + hold(S) + [("pelvis", seat, 1.5)], T=2.0, posture=lieA, root=True, root_rot=True,
             root_cost=2.0, w_post=0.03, speed=3.0, allow=allow, orient=[("hips", q_back, 0.6)], upright=0.0)
-    ok = _until(D, lambda S: S.over and np.linalg.norm(S.site("A", "sole_r") - S.site("V", "hipbone_l")) < 0.07 and
+    ok = _until(D, lambda S: np.linalg.norm(S.site("A", "sole_r") - S.site("V", "hipbone_l")) < 0.07 and
                 np.linalg.norm(S.site("A", "sole_l") - behind(S)) < 0.08, 2.0)
     R.marks["legs"] = S.t
     log(f"[leg_lock] legs {'in' if ok else 'NOT in'} at t={S.t:.2f}: sole_r->his hip {np.linalg.norm(S.site('A', 'sole_r') - S.site('V', 'hipbone_l')):.3f} "
-        f"sole_l->behind {np.linalg.norm(S.site('A', 'sole_l') - behind(S)):.3f} over {S.over} pelvis {S.site('A', 'pelvis').round(3)}")
+        f"sole_l->behind {np.linalg.norm(S.site('A', 'sole_l') - behind(S)):.3f} pelvis {S.site('A', 'pelvis').round(3)}")
     return R

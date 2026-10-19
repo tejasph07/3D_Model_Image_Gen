@@ -268,7 +268,7 @@ class Scene:
             d.xfrc_applied[bid, :3] = F
             d.xfrc_applied[bid, 3:] = T
 
-    def grip(self, who: str, limb: str, other: str, body: str, on=True, stiff=0.02):
+    def grip(self, who: str, limb: str, other: str, body: str, on=True, stiff=0.04):
         """Weld `who`'s limb to `other`'s body in their *current* relative pose (a hand closing on what it
         touches). Only call it when the limb is touching (see `touching`)."""
         n = f"grip|{who}:{limb}|{other}:{body}"
@@ -279,8 +279,9 @@ class Scene:
             g1, g2 = self.m.geom(f"{who}:{limb}").id, self.m.geom(f"{other}:{body}").id
             ft = np.zeros(6)
             mujoco.mj_geomDistance(self.m, self.d, g1, g2, 0.2, ft)
-            p = (ft[:3] + ft[3:]) / 2
-            for k, b in ((0, b1), (3, b2)):
+            # each anchor on its own body's surface, where the two surfaces meet: the grip holds the surfaces
+            # together, it does not try to pull them into each other (which the contact would fight)
+            for k, b, p in ((0, b1, ft[:3]), (3, b2, ft[3:])):
                 qi = np.zeros(4)
                 mujoco.mju_negQuat(qi, b.xquat)
                 loc = np.zeros(3)
@@ -670,7 +671,7 @@ def place(scene: Scene, actor: str, dx: float = 0.0, dz: float = 0.0, q: np.ndar
     mujoco.mj_forward(m, d)
 
 
-SNAP_EXTRA = ("toward", "right", "yaw", "ank_goal", "scoop", "over", "hs")  # scene attributes the phases keep
+SNAP_EXTRA = ("toward", "right", "yaw", "ank_goal", "scoop", "over", "hs", "clamp_local", "seat", "q_back")  # scene attributes the phases keep
 
 
 def snapshot(S: Scene) -> dict:
