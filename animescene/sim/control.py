@@ -191,10 +191,12 @@ class Scene:
                 self.m.actuator_gainprm[aid, 0] = a.kp0[i] * k
                 self.m.actuator_biasprm[aid, 1] = -a.kp0[i] * k
 
-    def assist(self, actor: str, on: bool, pos=None, quat=None, stiff=0.08, torque=25.0, max_force=0.6, max_torque=60.0):
+    def assist(self, actor: str, on: bool, pos=None, quat=None, stiff=0.08, torque=25.0, max_force=0.6, max_torque=60.0,
+               max_lift=0.25):
         """Balance assist: a force- and torque-limited pull of the hips toward (pos, quat), standing in for
         the balance reflexes a servo skeleton lacks. It can hold at most `max_force` x body weight and
-        `max_torque` N m (scaled by mass), so it steadies a body but cannot lift or throw one.
+        `max_torque` N m (scaled by mass), and pushes up with at most `max_lift` x body weight: the legs
+        carry the body (and anything it lifts), the assist only steadies it.
         (`stiff`: response time in s; `torque` is kept for compatibility.) Off: the body is on its own."""
         a = self.actors[actor]
         self.d.eq_active[a.root_eq] = 0
@@ -208,7 +210,28 @@ class Scene:
         self.d.mocap_pos[a.mocap] = hips.xpos if pos is None else pos
         self.d.mocap_quat[a.mocap] = hips.xquat if quat is None else quat
         w = 2 * np.pi / max(stiff * 4, 0.05)  # natural frequency from the response time
-        self.assists[actor] = dict(w=w, fmax=max_force * a.mass * 9.81, tmax=max_torque * a.mass / 70.0)
+        self.assists[actor] = dict(w=w, fmax=max_force * a.mass * 9.81, tmax=max_torque * a.mass / 70.0,
+                                    lmax=max_lift * a.mass * 9.81)
+
+    def apply_tone(self, Ti=0.25, leak=1.0):
+        """Holding effort: a muscle under a steady load (its own limb's weight, a held leg) doesn't sag
+        by load / stiffness the way a bare servo does; it raises its effort until the joint is where it
+        was told to be. A leaky integral of each joint's angle error, scaled by the muscle's current gain
+        (so a weakened muscle stays weak), applied as joint torque, with PD + effort clipped to the
+        muscle's torque limit."""
+        m, d = self.m, self.d
+        dt = m.opt.timestep
+        if not hasattr(self, "tone"):
+            self.tone = {k: np.zeros(len(a.aids)) for k, a in self.actors.items()}
+        for k, a in self.actors.items():
+            g = m.actuator_gainprm[a.aids, 0]
+            err = d.ctrl[a.aids] - d.qpos[a.qadr]
+            I = self.tone[k]
+            I += dt * (g * err / Ti - leak * I)
+            fmax = m.actuator_forcerange[a.aids, 1]
+            pd = d.actuator_force[a.aids]
+            np.clip(I, -fmax - pd, fmax - pd, out=I)
+            d.qfrc_applied[a.dadr[6:]] = I
 
     def apply_assists(self):
         m, d = self.m, self.d
@@ -227,6 +250,7 @@ class Scene:
             n = np.linalg.norm(F)
             if n > A["fmax"]:
                 F *= A["fmax"] / n
+            F[1] = min(F[1], A.get("lmax", np.inf))
             qe, ci = np.zeros(4), np.zeros(4)
             mujoco.mju_negQuat(ci, d.xquat[bid])
             mujoco.mju_mulQuat(qe, tgt_q, ci)
@@ -285,6 +309,7 @@ class Scene:
             if each:
                 each(self, i / max(n - 1, 1))
             self.apply_assists()
+            self.apply_tone()
             mujoco.mj_step(self.m, self.d)
             self.t += self.m.opt.timestep
             if record_every and (i % max(1, int(record_every / self.m.opt.timestep)) == 0):
@@ -315,7 +340,7 @@ class Scene:
 
     def _ik(self, actor: str, tasks: list, posture=None, w_post=0.02, iters=120, root=True, q0=None,
            orient: list | None = None, lock: tuple = (), root_cost: float = 1.0, root_rot: bool = True,
-           avoid: bool = True, allow: tuple = (), clearance: float = 0.004) -> tuple:
+           avoid: bool = True, allow: tuple = (), clearance: float = 0.004, upright: float = 1.0) -> tuple:
         """Joint targets that put sites on points: tasks = [(site, target xyz, weight)], orient =
         [(body, target quat wxyz, weight)]. Respects joint limits. `root` lets the hips move/rotate too
         (the result's root pose is where the balance assist should take them). `lock`: joint name
@@ -392,12 +417,27 @@ class Scene:
             qh = d.qpos[a.qadr]
             J = np.vstack([J, Wp])
             E = np.concatenate([E, (post - qh) * w_post])
-            if root:  # moving the whole body is a last resort: the hips stay near where they are
+            if root:  # moving the whole body is a last resort: the hips stay near where they are, and upright
                 Wr = np.zeros((6, len(cols)))
                 Wr[np.arange(6), np.arange(6)] = w_post * 6.0
                 rp = d.qpos[root_q:root_q + 3]
                 E_r = np.zeros(6)
                 E_r[:3] = (root_q0[:3] - rp) * w_post * 6.0
+                if root_rot:  # pelvis rotation: prefer the current heading, upright
+                    cur = d.qpos[root_q + 3:root_q + 7]
+                    fwd = np.zeros(3)
+                    mujoco.mju_rotVecQuat(fwd, np.array([0, 0, 1.0]), root_q0[3:7])
+                    yw = np.arctan2(fwd[0], fwd[2])
+                    tq = np.array([np.cos(yw / 2), 0, np.sin(yw / 2), 0])
+                    qe, ci = np.zeros(4), np.zeros(4)
+                    mujoco.mju_negQuat(ci, cur)
+                    mujoco.mju_mulQuat(qe, tq, ci)
+                    rv = np.zeros(3)
+                    mujoco.mju_quat2Vel(rv, qe, 1.0)
+                    # free-joint angular dofs are in the body frame
+                    rv_local = np.zeros(3)
+                    mujoco.mju_rotVecQuat(rv_local, rv, ci)
+                    E_r[3:] = rv_local * w_post * 6.0 * upright
                 J = np.vstack([J, Wr])
                 E = np.concatenate([E, E_r])
             if root and not root_rot:  # the hips may shift, not tilt (bending happens in the joints)
@@ -469,11 +509,16 @@ class Director:
                                  r0=(mp, mq), r1=None if root is None else (np.asarray(root[:3]), np.asarray(root[3:7])),
                                  t0=S.t + delay, T=T)
 
-    def track(self, actor: str, tasks_fn, T: float, posture=None, every=0.02, speed=6.0, **ik):
+    def track(self, actor: str, tasks_fn, T: float, posture=None, every=0.02, speed=6.0, plant=(), **ik):
         """Closed loop: every `every` seconds re-solve the IK for tasks_fn(scene) (targets read from where
-        things are *now*) and move the muscle targets toward it at most `speed` rad/s."""
+        things are *now*) and move the muscle targets toward it at most `speed` rad/s.
+        plant: sites (e.g. "sole_l", "heel_l") that stay where they are when tracking starts - feet on the
+        floor. Without them the plan may bend a knee that, with the foot on the ground, would just drop
+        the hips."""
         S = self.S
-        self.trackers[actor] = dict(fn=tasks_fn, until=S.t + T, every=every, next=S.t, posture=posture, ik=ik,
+        pinned = [(n, S.site(actor, n).copy()) for n in plant]
+        fn = tasks_fn if not pinned else (lambda S: list(tasks_fn(S)) + [(n, p, 1.5) for n, p in pinned])
+        self.trackers[actor] = dict(fn=fn, until=S.t + T, every=every, next=S.t, posture=posture, ik=ik,
                                     goal=None, root=None, speed=speed)
 
     def when(self, pred, action, once=True):
@@ -505,6 +550,8 @@ class Director:
                 S.d.ctrl[a.aids] = cur + np.clip(tr["goal"] - cur, -tr["speed"] * dt, tr["speed"] * dt)
                 if tr["ik"].get("root", True) and actor in getattr(S, "assists", {}):
                     S.d.mocap_pos[a.mocap] += np.clip(tr["root"][:3] - S.d.mocap_pos[a.mocap], -1.0 * dt, 1.0 * dt)
+                    if tr["ik"].get("root_rot", True):
+                        S.d.mocap_quat[a.mocap] = _slerp(S.d.mocap_quat[a.mocap], tr["root"][3:7], min(1.0, 3.0 * dt))
         for w in list(self.watch):
             if w[0](S):
                 w[1](S)
@@ -604,12 +651,17 @@ class Reach:
         palm, knu = S.site(self.who, f"palm_{self.side}"), S.site(self.who, f"knuckles_{self.side}")
         if self.stage == "hover":
             hp = p + n * self.approach
-            facing = (knu - palm) @ n / max(np.linalg.norm(knu - palm), 1e-6)
-            if np.linalg.norm(palm - hp) < 0.025 and facing > 0.8:
+            if np.linalg.norm(palm - hp) < 0.025 and self.facing(S, n) > 0.8:
                 self.stage = "descend"
             return [(f"palm_{self.side}", hp, 1.0), (f"knuckles_{self.side}", hp + n * thick, 0.8)]
         dp = p + n * 0.002
         return [(f"palm_{self.side}", dp, 1.0), (f"knuckles_{self.side}", dp + n * thick, 0.8)]
+
+    def facing(self, S, n) -> float:
+        """cos of the angle between the back of the hand and n (1: palm flat on the surface). The palm
+        faces the hand bone's -y in the rest frame; body rotations are rotations from rest."""
+        back = S.d.body(f"{self.who}:{self.limb}").xmat.reshape(3, 3)[:, 1]
+        return float(back @ n)
 
     def check(self, S):
         if self.done or self.stage != "descend":
