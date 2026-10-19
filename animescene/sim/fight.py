@@ -138,7 +138,8 @@ def panel_camera(S, beat, key, cam, size):
     return _Cam(eye, target, cam.get("fov", 35.0), size)
 
 
-def run(spec: dict, out_dir, size=(1200, 900), log=print):
+def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None):
+    """stylize: None, "all" or panel indices to pass through the img2img illustration step (stylize.py)."""
     out = Path(out_dir)
     out.mkdir(parents=True, exist_ok=True)
     cast = spec["cast"]
@@ -146,6 +147,7 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
     S = Scene(specs)
     expr0 = {c["name"]: c.get("expression", "serious") for c in cast}
     panels, jobs, metas = [], [], []
+    owners = []
     wounds = Ledger()  # injuries carried from beat to beat
     for w in spec.get("injuries", []):  # already hurt when the story starts
         wounds.add(w["who"], w["spot"], w.get("kind", "bruise"), w.get("radius", 0.03), w.get("age", 0.0))
@@ -202,6 +204,7 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
             meta["subjects"] = [max(0, min(xs)), max(0, min(ys)), min(size[0], max(xs)), min(size[1], max(ys))]
             (pdir / "meta.json").write_text(json.dumps(meta))
             panels.append((p, pdir))
+            owners.append(beat)
         for k in keys:  # the blows that landed in this beat mark the body from the next beat on
             for t in k.touches:
                 if t.verb in ("punch", "kick", "knee", "stamp", "press", "twist", "pinch") and t.who == beat["a"]:
@@ -215,6 +218,13 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
             wounds.heal(beat["heal"])
     log(f"rendering {len(jobs)} panels")
     render_jobs(jobs, log=lambda s: None)
+    if stylize:
+        from .. import stylize as ST
+        pick = range(len(panels)) if stylize == "all" else stylize
+        for i in pick:
+            p, pdir = panels[i]
+            (pdir / "final.png").replace(pdir / "render.png")
+            ST.stylize(pdir / "render.png", pdir / "final.png", ST.prompt_for(spec, owners[i], p), log=log)
     pages = compose_pages(spec, panels, out)
     log("pages: " + ", ".join(str(p) for p in pages))
     return pages
@@ -222,4 +232,6 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print):
 
 if __name__ == "__main__":
     import sys
-    run(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2])
+    opt = {a.split("=")[0]: a.split("=")[1] for a in sys.argv[3:] if a.startswith("--stylize=")}.get("--stylize")
+    st = None if opt is None else ("all" if opt == "all" else [int(x) for x in opt.split(",")])
+    run(json.loads(Path(sys.argv[1]).read_text()), sys.argv[2], stylize=st)
