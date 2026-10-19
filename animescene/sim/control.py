@@ -250,7 +250,7 @@ class Scene:
             n = np.linalg.norm(F)
             if n > A["fmax"]:
                 F *= A["fmax"] / n
-            F[1] = min(F[1], A.get("lmax", np.inf))
+            F[1] = float(np.clip(F[1], -0.4 * A.get("lmax", np.inf), A.get("lmax", np.inf)))  # gravity pulls down, not the assist
             qe, ci = np.zeros(4), np.zeros(4)
             mujoco.mju_negQuat(ci, d.xquat[bid])
             mujoco.mju_mulQuat(qe, tgt_q, ci)
@@ -340,7 +340,8 @@ class Scene:
 
     def _ik(self, actor: str, tasks: list, posture=None, w_post=0.02, iters=120, root=True, q0=None,
            orient: list | None = None, lock: tuple = (), root_cost: float = 1.0, root_rot: bool = True,
-           avoid: bool = True, allow: tuple = (), clearance: float = 0.004, upright: float = 1.0) -> tuple:
+           avoid: bool = True, allow: tuple = (), clearance: float = 0.004, upright: float = 1.0,
+           hips_y: float | None = None) -> tuple:
         """Joint targets that put sites on points: tasks = [(site, target xyz, weight)], orient =
         [(body, target quat wxyz, weight)]. Respects joint limits. `root` lets the hips move/rotate too
         (the result's root pose is where the balance assist should take them). `lock`: joint name
@@ -354,9 +355,11 @@ class Scene:
         cols = a.dadr if root else a.dadr[6:]
         locked = np.array([any(f in m.joint(j).name for f in lock) for j in a.jids]) if lock else np.zeros(len(a.jids), bool)
         post = self.q(actor) if posture is None else np.asarray(posture, float)
-        if posture is not None:  # start from the intended shape: the solution stays in its family
+        if posture is not None and q0 is None:  # start from the intended shape: the solution stays in its family
             d.qpos[a.qadr] = np.clip(post, a.lo, a.hi)
         root_q0 = d.qpos[root_q:root_q + 7].copy()
+        if hips_y is not None:  # where the hips should be held vertically (rising, sitting down)
+            root_q0[1] = hips_y
         lam = 4e-3  # damping: no huge steps near singular configurations (straight limbs)
         res = 0.0
         jacp, jacr = np.zeros((3, m.nv)), np.zeros((3, m.nv))
@@ -366,6 +369,22 @@ class Scene:
             rows, errs = [], []
             res = 0.0
             for site, target, w in tasks:
+                if site == "@com":  # balance: the body's centre of mass over a floor point (horizontal only)
+                    bid = m.body(P + "hips").id
+                    e = np.asarray(target, float) - d.subtree_com[bid]
+                    e[1] = 0.0
+                    mujoco.mj_jacSubtreeCom(m, d, jacp, bid)
+                    jc = jacp[:, cols].copy()
+                    jc[1] = 0.0
+                    rows.append(jc * w)
+                    errs.append(e * w)
+                    continue
+                if site.startswith("@y:"):  # a height only: "@y:pelvis" -> that site's height to target[1]
+                    sid = m.site(P + site[3:]).id
+                    mujoco.mj_jacSite(m, d, jacp, None, sid)
+                    rows.append(jacp[1:2, cols] * w)
+                    errs.append(np.array([(float(np.ravel(target)[1]) - d.site_xpos[sid][1]) * w]))
+                    continue
                 sid = m.site(P + site).id
                 e = np.asarray(target, float) - d.site_xpos[sid]
                 res = max(res, float(np.linalg.norm(e)))
@@ -492,6 +511,7 @@ class Director:
     target) to new ones along a minimum-jerk profile; watchers fire events when contacts happen."""
 
     def __init__(self, scene: Scene):
+        self._fk = mujoco.MjData(scene.m)
         self.S = scene
         self.moves = {}
         self.watch = []  # (predicate(scene) -> bool, action(scene), once)
@@ -509,17 +529,31 @@ class Director:
                                  r0=(mp, mq), r1=None if root is None else (np.asarray(root[:3]), np.asarray(root[3:7])),
                                  t0=S.t + delay, T=T)
 
-    def track(self, actor: str, tasks_fn, T: float, posture=None, every=0.02, speed=6.0, plant=(), **ik):
+    def track(self, actor: str, tasks_fn, T: float, posture=None, every=0.02, speed=6.0, plant=(), balance=0.8, anchor=(),
+              only=(), **ik):
         """Closed loop: every `every` seconds re-solve the IK for tasks_fn(scene) (targets read from where
         things are *now*) and move the muscle targets toward it at most `speed` rad/s.
         plant: sites (e.g. "sole_l", "heel_l") that stay where they are when tracking starts - feet on the
         floor. Without them the plan may bend a knee that, with the foot on the ground, would just drop
-        the hips."""
+        the hips.
+        anchor: sites on the ground (default: the planted ones) whose actual position fixes where the hips
+        should be: the balance assist is sent to the planned hips shifted by (actual - planned) anchor
+        position, so it never pulls the hips somewhere the standing leg can't carry them.
+        only: joint name fragments - the plan drives just these muscles (the rest keep their own targets)."""
         S = self.S
         pinned = [(n, S.site(actor, n).copy()) for n in plant]
-        fn = tasks_fn if not pinned else (lambda S: list(tasks_fn(S)) + [(n, p, 1.5) for n, p in pinned])
+        anchor = tuple(anchor)
+        if pinned:  # planted feet - where they actually are on the floor now - and the weight over them
+            def fn(S):
+                feet = [(n, np.array([S.site(actor, n)[0], p[1], S.site(actor, n)[2]])) for n, p in pinned]
+                return list(tasks_fn(S)) + [(n, p, 1.5) for n, p in feet] + \
+                    [("@com", np.mean([p for _, p in feet], axis=0), balance)]
+        else:
+            fn = tasks_fn
         self.trackers[actor] = dict(fn=fn, until=S.t + T, every=every, next=S.t, posture=posture, ik=ik,
-                                    goal=None, root=None, speed=speed)
+                                    goal=None, root=None, speed=speed, anchor=anchor,
+                                    mask=None if not only else np.array([any(f in S.m.joint(j).name for f in only)
+                                                                         for j in S.actors[actor].jids]))
 
     def when(self, pred, action, once=True):
         self.watch.append([pred, action, once])
@@ -543,11 +577,35 @@ class Director:
             a = S.actors[actor]
             if S.t >= tr["next"]:
                 tr["next"] = S.t + tr["every"]
-                q, r, _ = S.ik(actor, tr["fn"](S), posture=tr["posture"], iters=40, **tr["ik"])
+                adr = S.m.jnt_qposadr[S.m.joint(actor + ":root").id]
+                tasks = tr["last_tasks"] = tr["fn"](S)
+                if tr.get("plan") is None:  # first solve: from the intended shape, with restarts
+                    q, r, _ = S.ik(actor, tasks, posture=tr["posture"], iters=120, **tr["ik"])
+                else:  # then each solve continues the previous plan: a smooth trajectory, not a re-guess
+                    q0 = S.d.qpos.copy()
+                    if tr["ik"].get("root", True):  # the hips are part of the plan
+                        q0[adr:adr + 7] = tr["plan"][0]
+                    q0[a.qadr] = tr["plan"][1]
+                    q, r, _ = S._ik(actor, tasks, tr["posture"], tr["ik"].get("w_post", 0.02), 30,
+                                    tr["ik"].get("root", True), q0, **{k: v for k, v in tr["ik"].items() if k not in ("w_post", "root")})
+                tr["plan"] = (r.copy(), q.copy())
+                anc = tr["anchor"](S) if callable(tr["anchor"]) else tr["anchor"]
+                if anc and tr["ik"].get("root", True):
+                    d = self._fk
+                    d.qpos[:] = S.d.qpos
+                    d.qpos[adr:adr + 7] = r
+                    d.qpos[a.qadr] = q
+                    mujoco.mj_kinematics(S.m, d)
+                    off = np.mean([S.site(actor, n) - d.site(f"{actor}:{n}").xpos for n in anc], axis=0)
+                    r = r.copy()
+                    r[[0, 2]] += off[[0, 2]]  # horizontal only: a vertical correction would feed back on a lifting foot
                 tr["goal"], tr["root"] = q, r
             if tr["goal"] is not None:
                 cur = S.d.ctrl[a.aids]
-                S.d.ctrl[a.aids] = cur + np.clip(tr["goal"] - cur, -tr["speed"] * dt, tr["speed"] * dt)
+                step = np.clip(tr["goal"] - cur, -tr["speed"] * dt, tr["speed"] * dt)
+                if tr["mask"] is not None:
+                    step = step * tr["mask"]
+                S.d.ctrl[a.aids] = cur + step
                 if tr["ik"].get("root", True) and actor in getattr(S, "assists", {}):
                     S.d.mocap_pos[a.mocap] += np.clip(tr["root"][:3] - S.d.mocap_pos[a.mocap], -1.0 * dt, 1.0 * dt)
                     if tr["ik"].get("root_rot", True):
@@ -608,13 +666,19 @@ def place(scene: Scene, actor: str, dx: float = 0.0, dz: float = 0.0, q: np.ndar
     mujoco.mj_forward(m, d)
 
 
+SNAP_EXTRA = ("toward", "right", "yaw", "ank_goal", "scoop", "over", "hs")  # scene attributes the phases keep
+
+
 def snapshot(S: Scene) -> dict:
     """Everything needed to resume the simulation exactly here (state, muscles, grips, assists)."""
     d, m = S.d, S.m
     return dict(qpos=d.qpos.copy(), qvel=d.qvel.copy(), act=d.act.copy(), ctrl=d.ctrl.copy(), eq_active=d.eq_active.copy(),
                 eq_data=m.eq_data.copy(), eq_solref=m.eq_solref.copy(), mocap_pos=d.mocap_pos.copy(), mocap_quat=d.mocap_quat.copy(),
                 gain=m.actuator_gainprm.copy(), bias=m.actuator_biasprm.copy(), t=S.t, held=set(getattr(S, "held", set())),
-                log=list(S.log), assists={k: dict(v) for k, v in getattr(S, "assists", {}).items()}, frames=list(S.frames))
+                log=list(S.log), assists={k: dict(v) for k, v in getattr(S, "assists", {}).items()}, frames=list(S.frames),
+                tone={k: v.copy() for k, v in getattr(S, "tone", {}).items()},
+                warm=d.qacc_warmstart.copy(), qfrc_applied=d.qfrc_applied.copy(), xfrc_applied=d.xfrc_applied.copy(),
+                extra={k: v for k, v in vars(S).items() if k in SNAP_EXTRA})
 
 
 def restore(S: Scene, snap: dict):
@@ -627,6 +691,12 @@ def restore(S: Scene, snap: dict):
     S.t, S.held, S.log = snap["t"], set(snap["held"]), list(snap["log"])
     S.assists = {k: dict(v) for k, v in snap["assists"].items()}
     S.frames = list(snap["frames"])
+    if "warm" in snap:  # the solver's warm start and the applied forces: resuming is then exact
+        d.qacc_warmstart[:], d.qfrc_applied[:], d.xfrc_applied[:] = snap["warm"], snap["qfrc_applied"], snap["xfrc_applied"]
+    if snap.get("tone"):
+        S.tone = {k: v.copy() for k, v in snap["tone"].items()}
+    for k, v in snap.get("extra", {}).items():
+        setattr(S, k, v)
     mujoco.mj_forward(m, d)
 
 
@@ -639,7 +709,7 @@ class Reach:
         self.S, self.who, self.side, self.other, self.body, self.target, self.approach = \
             scene, who, side, other, body, target, approach
         self.limb = ("left" if side == "l" else "right") + "Hand"
-        self.stage = "hover"
+        self.stage = "far"  # far -> hover -> descend: the hand comes in from the open side, never across the body
         self.done = False
 
     def tasks(self, S):
@@ -649,11 +719,16 @@ class Reach:
         n = np.asarray(n, float) / np.linalg.norm(n)
         thick = 0.036
         palm, knu = S.site(self.who, f"palm_{self.side}"), S.site(self.who, f"knuckles_{self.side}")
+        if self.stage == "far":
+            fp = p + n * (self.approach + 0.07)
+            if np.linalg.norm(palm - fp) < 0.05:
+                self.stage = "hover"
+            return [(f"palm_{self.side}", fp, 1.0), (f"knuckles_{self.side}", fp + n * thick, 0.5)]
         if self.stage == "hover":
             hp = p + n * self.approach
-            if np.linalg.norm(palm - hp) < 0.025 and self.facing(S, n) > 0.8:
+            if np.linalg.norm(palm - hp) < 0.025 and self.facing(S, n) > 0.65:
                 self.stage = "descend"
-            return [(f"palm_{self.side}", hp, 1.0), (f"knuckles_{self.side}", hp + n * thick, 0.8)]
+            return [(f"palm_{self.side}", hp, 1.0), (f"knuckles_{self.side}", hp + n * thick, 1.2)]
         dp = p + n * 0.002
         return [(f"palm_{self.side}", dp, 1.0), (f"knuckles_{self.side}", dp + n * thick, 0.8)]
 
@@ -678,3 +753,45 @@ class Reach:
 
     def allow(self):
         return ((f"{self.who}:{self.limb}", f"{self.other}:{self.body}"),)
+
+
+class Step:
+    """One step: first the weight shifts over the stance foot, then the swing foot lifts, travels and comes
+    down on `goal` (a floor point, or a point on a body - callable(S)) along a raised arc, the other foot
+    planted throughout; the plan's free root carries the hips. tasks(S) merges with whatever else the
+    body is doing."""
+
+    SHIFT = 0.3  # fraction of T spent moving the weight before the foot leaves the ground
+
+    def __init__(self, scene: Scene, who: str, side: str, goal, T=0.9, clear=0.07):
+        self.S, self.who, self.side, self.T, self.clear = scene, who, side, T, clear
+        self.goal = goal if callable(goal) else (lambda S, g=np.asarray(goal, float): g)
+        o = "l" if side == "r" else "r"
+        self.t0 = scene.t
+        self.start = scene.site(who, f"sole_{side}").copy()
+        self.heel_off = scene.site(who, f"heel_{side}") - self.start
+        self.stance = [(f"sole_{o}", scene.site(who, f"sole_{o}").copy()), (f"heel_{o}", scene.site(who, f"heel_{o}").copy())]
+        self.com0 = scene.d.subtree_com[scene.m.body(f"{who}:hips").id].copy()
+        self.anchor = tuple(n for n, _ in self.stance)  # pass as Director.track(anchor=...)
+
+    def phase(self, S):
+        return min(1.0, max(0.0, (S.t - self.t0) / self.T))
+
+    def u(self, S):
+        return min_jerk((self.phase(S) - self.SHIFT) / (1 - self.SHIFT))
+
+    def tasks(self, S):
+        s, u = self.phase(S), self.u(S)
+        g = self.goal(S)
+        p = self.start + (g - self.start) * u + np.array([0, 1.0, 0]) * self.clear * np.sin(np.pi * u)
+        over = np.mean([q for _, q in self.stance], axis=0)
+        if s < self.SHIFT:  # weight onto the stance foot
+            com = self.com0 + (over - self.com0) * min_jerk(s / self.SHIFT)
+        else:  # over it while the foot is in the air; shared again as it lands
+            both = (over + p + self.heel_off / 2) / 2
+            com = over + (both - over) * float(np.clip((u - 0.85) / 0.15, 0, 1))
+        return [(f"sole_{self.side}", p, 1.5), (f"heel_{self.side}", p + self.heel_off, 0.8)] + \
+            [(n, q, 1.5) for n, q in self.stance] + [("@com", com, 1.0)]
+
+    def done(self, S, tol=0.03):
+        return self.phase(S) >= 1.0 and np.linalg.norm(S.site(self.who, f"sole_{self.side}") - self.goal(S)) < tol
