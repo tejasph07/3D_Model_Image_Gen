@@ -189,7 +189,8 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None, stylize_
                                         **({"fist": shapes[n]} if n in shapes else {})))
             env = build_set(spec, np.mean([S.body(n, "hips").xpos for n in (beat["a"], beat["v"])], axis=0), cam)
             jobs.append({"out": str(pdir / "final.png"), "width": size[0], "height": size[1], "camera": cam.job_camera(),
-                         "actors": acts, "environment": env, "supersample": 2, "passes": [], "softContacts": True})
+                         "actors": acts, "environment": env, "supersample": 2, "passes": ["depth", "ids"], "softContacts": True})
+            (pdir / "job.json").write_text(json.dumps(jobs[-1]))  # re-render later without re-solving
             meta = {"size": list(size), "actors": {}, "impacts": []}
             for n in S.actors:
                 h = cam.project(S.site(n, "eyes"))

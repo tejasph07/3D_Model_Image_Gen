@@ -7,26 +7,30 @@
    "name": "Rin",
    "model": "AvatarSample_B",
    "expression": "serious",
-   "look": "girl with long dark purple hair and black ribbons, track jacket"
+   "look": "girl with long dark purple hair and black ribbons, track jacket",
+   "tags": "1girl, dark-skinned female, long hair, purple hair, blunt bangs, black hair ribbon, yellow eyes, black and white track jacket, pink pleated skirt, choker"
   },
   {
    "name": "Kaito",
    "model": "AvatarSample_C",
    "expression": "smirk",
-   "look": "young man with short dark hair, black jacket"
+   "look": "young man with short dark hair, black jacket",
+   "tags": "1boy, short hair, black hair, black track jacket, black pants, fingerless gloves"
   },
   {
    "name": "Goro",
    "model": "HairSample_Male",
    "scale": 1.12,
    "expression": "angry",
-   "look": "big man with short hair, school uniform"
+   "look": "big man with short hair, school uniform",
+   "tags": "1boy, large male, muscular, short hair, black hair, white hoodie, black pants"
   },
   {
    "name": "Jun",
    "model": "Sakurada_Fumiriya",
    "expression": "grin",
-   "look": "young man with light hair, vest and white shirt"
+   "look": "young man with light hair, vest and white shirt",
+   "tags": "1boy, light brown hair, short hair, white shirt, black sweater vest, orange necktie, school uniform, black pants"
   }
  ],
  "beats": [
