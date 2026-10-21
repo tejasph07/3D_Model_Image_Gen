@@ -3,7 +3,7 @@
 The render's depth pass and its traced line art go to ControlNet-Union, so positions and contacts hold even
 when the model repaints most of the image; each character's prompt only speaks inside its own silhouette (the
 renderer's ID pass), so four characters keep four designs. python -m tools.anime_pass PANEL_DIR... --story=S.json
-[--strength=0.8 --depth=0.6 --line=0.6 --steps=24 --cfg=6 --width=1024 --tag=x] [--remote=URL --token=T]
+[--strength=1 --depth=0.7 --pose=0.85 --line=0.25 --control_end=0.7 --steps=24 --cfg=6 --width=1024 --tag=x] [--remote=URL --token=T]
 """
 from __future__ import annotations
 
@@ -38,8 +38,11 @@ def lineart(img: Image.Image) -> Image.Image:
     return Image.fromarray(e).convert("RGB")
 
 
-def run(engine, pdir: Path, spec: dict, strength=0.8, depth=0.6, line=0.6, steps=24, cfg=6.0, width=1024, seed=0,
-        control_end=0.8, pose=0.0, tag="", log=print):
+def run(engine, pdir: Path, spec: dict, strength=1.0, depth=0.7, line=0.25, steps=24, cfg=6.0, width=1024, seed=0,
+        control_end=0.7, pose=0.85, tag="", log=print):
+    """Default: a full repaint (strength 1) held only by the 3D scene's depth and skeletons (plus a little line
+    art), so the picture is drawn like a text-to-image anime illustration instead of inheriting the render's 3D
+    shading; strength < 1 keeps more of the render's own colours and details."""
     t0 = time.time()
     src = Image.open(pdir / "render.png" if (pdir / "render.png").exists() else pdir / "final.png").convert("RGB")
     W0, H0 = src.size
