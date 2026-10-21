@@ -89,6 +89,25 @@ class _Cam:
         return {"eye": self.eye.tolist(), "fwd": self.fwd.tolist(), "up": [0, 1, 0], "fov": self.fov}
 
 
+OPENPOSE = ["nose", "neck", "shoulder_r", "elbow_r", "hand_r", "shoulder_l", "elbow_l", "hand_l", "hip_r", "knee_r",
+            "ankle_r", "hip_l", "knee_l", "ankle_l", "eye_r", "eye_l", "ear_r", "ear_l"]
+
+
+def openpose_points(S, n, cam):
+    """The 18 OpenPose (COCO) keypoints of actor n, projected: [[x, y, depth] ...] (depth < 0: behind the camera)."""
+    P = {k: S.site(n, k) for k in ("nose", "shoulder_r", "elbow_r", "hand_r", "shoulder_l", "elbow_l", "hand_l", "hip_r",
+                                   "ankle_r", "hip_l", "ankle_l", "ear_r", "ear_l", "eyes")}
+    P["neck"] = (P["shoulder_l"] + P["shoulder_r"]) / 2
+    for side in ("l", "r"):  # knee joint (the kneecap site sits in front of it), eyes beside the eye-line centre
+        P[f"knee_{side}"] = S.body(n, f"{'left' if side == 'l' else 'right'}LowerLeg").xpos.copy()
+        P[f"eye_{side}"] = P["eyes"] + (P[f"ear_{side}"] - P["eyes"]) * 0.3
+    out = []
+    for k in OPENPOSE:
+        x, y = cam.project(P[k])
+        out.append([float(x), float(y), float((P[k] - cam.eye) @ cam.fwd)])
+    return out
+
+
 def panel_camera(S, beat, key, cam, size):
     a, v = beat["a"], beat["v"]
     focus = cam.get("focus", "pair")
@@ -197,6 +216,7 @@ def run(spec: dict, out_dir, size=(1200, 900), log=print, stylize=None, stylize_
                 top = cam.project(S.site(n, "crown"))
                 if 0 <= h[0] <= size[0] and 0 <= h[1] <= size[1]:
                     meta["actors"][n] = {"head": h, "head_top": top, "head_r_px": float(abs(h[1] - top[1]))}
+            meta["pose2d"] = {n: openpose_points(S, n, cam) for n in S.actors}  # for a skeleton ControlNet
             for t in k.touches:
                 if t.verb in ("punch", "kick", "knee", "stamp", "press") and t.who == beat["a"]:
                     meta["impacts"].append(cam.project(S.site(t.other, t.spot)))

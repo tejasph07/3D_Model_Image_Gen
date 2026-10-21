@@ -39,7 +39,7 @@ def lineart(img: Image.Image) -> Image.Image:
 
 
 def run(engine, pdir: Path, spec: dict, strength=0.8, depth=0.6, line=0.6, steps=24, cfg=6.0, width=1024, seed=0,
-        control_end=0.8, tag="", log=print):
+        control_end=0.8, pose=0.0, tag="", log=print):
     t0 = time.time()
     src = Image.open(pdir / "render.png" if (pdir / "render.png").exists() else pdir / "final.png").convert("RGB")
     W0, H0 = src.size
@@ -61,7 +61,14 @@ def run(engine, pdir: Path, spec: dict, strength=0.8, depth=0.6, line=0.6, steps
     regions.append((f"{STYLE}, no humans, scenery, {setting}, {spec.get('lighting', '')}", bg))
     who = ", ".join(c.get("tags", "").split(",")[0] for c, m in zip(cast, masks) if m.sum() > 50)
     glob = f"{STYLE}, {who}, fighting, {setting}"
-    controls = {"depth": (dep, depth), "lineart": (lineart(img), line)}
+    controls = {"depth": (dep, depth)}
+    if line > 0:
+        controls["lineart"] = (lineart(img), line)
+    if pose > 0:
+        meta = json.loads((pdir / "meta.json").read_text())
+        sk = openpose_image(meta, (W, H), masks)
+        sk.save(pdir / "control_openpose.png")
+        controls["openpose"] = (sk, pose)
     out = engine.sample(glob, NEGATIVE, W, H, steps=steps, cfg=cfg, seed=seed, controls=controls, control_end=control_end,
                         regions=regions, base_weight=0.3, init_image=img, strength=strength, progress=pdir.name)
     out = out.resize((W0, H0), Image.LANCZOS)
@@ -87,3 +94,35 @@ if __name__ == "__main__":
         eng = Engine()
     for d in args:
         run(eng, Path(d), spec, tag=kv.get("tag", ""), **num)
+
+
+# OpenPose drawing (the standard colours the ControlNet was trained on)
+LIMBS = [(1, 2), (1, 5), (2, 3), (3, 4), (5, 6), (6, 7), (1, 8), (8, 9), (9, 10), (1, 11), (11, 12), (12, 13), (1, 0),
+         (0, 14), (14, 16), (0, 15), (15, 17)]
+COLORS = [(255, 0, 0), (255, 85, 0), (255, 170, 0), (255, 255, 0), (170, 255, 0), (85, 255, 0), (0, 255, 0), (0, 255, 85),
+          (0, 255, 170), (0, 255, 255), (0, 170, 255), (0, 85, 255), (0, 0, 255), (85, 0, 255), (170, 0, 255),
+          (255, 0, 255), (255, 0, 170), (255, 0, 85)]
+
+
+def openpose_image(meta: dict, size, masks=None) -> Image.Image:
+    """Skeletons from the panel's projected keypoints (meta.json pose2d). A joint hidden behind someone else (per the
+    ID pass) is left out, as an annotator looking at the picture would."""
+    W, H = size
+    sx, sy = W / meta["size"][0], H / meta["size"][1]
+    canvas = np.zeros((H, W, 3), np.uint8)
+    th = max(2, int(round(W / 160)))
+    for ai, (name, pts) in enumerate(meta.get("pose2d", {}).items()):
+        P = [(int(x * sx), int(y * sy)) if d > 0.05 else None for x, y, d in pts]
+        if masks is not None:  # drop joints that land on another character
+            for j, p in enumerate(P):
+                if p and 0 <= p[0] < W and 0 <= p[1] < H:
+                    owner = masks[:, p[1], p[0]]
+                    if owner.max() > 0 and owner.argmax() != ai and owner[ai] == 0:
+                        P[j] = None
+        for li, (a, b) in enumerate(LIMBS):
+            if P[a] and P[b]:
+                cv2.line(canvas, P[a], P[b], [c * 0.6 for c in COLORS[li]], th * 2)
+        for j, p in enumerate(P):
+            if p:
+                cv2.circle(canvas, p, th + 1, COLORS[j], -1)
+    return Image.fromarray(canvas)
