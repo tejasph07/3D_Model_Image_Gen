@@ -1,4 +1,36 @@
-# Handoff: 3D pose-quality work in progress
+# Handoff
+
+## Current state (keyframe engine + story pipeline)
+
+Branch `ccr-a8adab1e-ukiqyy`. Primary path now: **keyframed contact choreography** (`animescene/sim/`).
+
+- `docs/CATALOG.md` (generated: `python -m animescene.sim.catalog`) lists every contact site, touch verb, joint
+  limit, posture, move/keyframe, bystander pose, camera/page option, expression, injury kind, model and set.
+- `keyframes.py`: Touch verbs (grab, press, pinch, twist, punch, clamp, rest, hook, tuck, squeeze) -> `solve_key`
+  (deterministic whole-body IK on the MuJoCo bodies; receiver first; no-collision then collision stages; seeds;
+  approach loop; best stage kept; facings give way when they block reach). `inbetween` fills frames.
+- `strikes.py` / `moves.py`: the move library (16 strikes/holds incl. ear_twist, 2 ankle-lock entries).
+- `fight.py`: story JSON -> placed beats -> solved panel keys -> occlusion-aware cameras -> renders -> pages.
+  `python -m animescene.sim.fight stories/alley_rin_fight.json OUT [--stylize=all|0,3]`.
+- `wounds.py` + `render3d/stage.js` (injury shader): injuries resolved on the skin mesh in its rest pose, so
+  they stay on the same skin in every pose/camera; ledger carries them across beats (hits mark, treat, heal).
+  Proof: `python -m tools.injury_proof OUT.png` (refs/proofs/injuries_3_poses.png).
+- `tools/turntable.py`: 16 cameras + depth pass round one solved key (refs/proofs/ear_twist_turntable.png).
+- `animescene/storygen.py`: prose -> scene JSON via an LLM (Gemini 2.5 Flash: GEMINI_API_KEY; or any
+  OpenAI-compatible endpoint: LLM_BASE_URL/LLM_API_KEY/LLM_MODEL), validated against the catalog, errors fed
+  back for repair. Not yet run against a real LLM (no key in the container).
+- `animescene/stylize.py`: optional local img2img (Anything v5 + ControlNet canny + LCM-LoRA, CPU, ~3-6 min per
+  panel, weights from the HF Hub without an account). Free hosted options tested: only AI Horde (anonymous,
+  ~15 min queue, SD1.5 only) works keyless; Pollinations, HF Spaces (ZeroGPU quota), HF Inference need keys.
+  **Ask the user before stylizing a whole story.**
+
+Known weak spots: ankle lock still "off" per the user; in-between glitches (guard entry leg clipping, drift
+and return); some moves (knee_strike, headlocks, rear_choke arch, roundhouse/back-kick reach) need tuning;
+palm-strike close-up camera; lock panels dark/overhead.
+
+---
+
+## Older notes (previous 3D-pose path)
 
 Branch `ccr-6eb5bf0c-3h0b54`. These notes pick up where the last session stopped.
 

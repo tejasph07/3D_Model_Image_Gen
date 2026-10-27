@@ -9,5 +9,6 @@ safetensors
 accelerate
 peft
 pytest
+mujoco>=3.2
 # optional: story -> scene directing with Claude
 anthropic

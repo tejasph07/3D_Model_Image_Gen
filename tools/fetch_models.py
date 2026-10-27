@@ -110,7 +110,7 @@ def fetch_hf(name, dest):
         os.replace(os.path.join(out, "config_promax.json"), os.path.join(out, "config.json"))
         os.replace(os.path.join(out, fname), os.path.join(out, "diffusion_pytorch_model.safetensors"))
     else:
-        snapshot_download(src, local_dir=out, allow_patterns=["*.json", "*.txt", "*.safetensors"],
+        snapshot_download(src, local_dir=out, allow_patterns=["*.json", "*.txt", "*/*.safetensors", "diffusion_pytorch_model*.safetensors"],
                           ignore_patterns=["*fp32*", "*.bin"])
 
 

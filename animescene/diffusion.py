@@ -178,12 +178,16 @@ def _fit_area(size, area):
 
 # ------------------------------------------------------------------ engine
 class Engine:
-    def __init__(self, models: str = DEFAULT_MODELS, dtype=torch.bfloat16, threads: int | None = None):
+    def __init__(self, models: str = DEFAULT_MODELS, dtype=None, threads: int | None = None, device: str | None = None):
+        device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        dtype = dtype or (torch.float16 if device == "cuda" else torch.bfloat16)
+        self.dev = torch.device(device)
         from diffusers import AutoencoderKL, ControlNetUnionModel, DPMSolverMultistepScheduler, \
             UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTextModelWithProjection, CLIPTokenizer
 
-        torch.set_num_threads(threads or os.cpu_count() or 4)
+        if device == "cpu":
+            torch.set_num_threads(threads or os.cpu_count() or 4)
         t0 = time.time()
         base = os.path.join(models, "sdxl")
         self.dtype = dtype
@@ -213,6 +217,9 @@ class Engine:
             else:
                 procs[name] = proc
         self.unet.set_attn_processor(procs)
+        for m in (self.te1, self.te2, self.unet, self.vae, self.controlnet):
+            if m is not None:
+                m.to(self.dev)
         self.loaded_loras: dict = {}
         print(f"[engine] loaded in {time.time() - t0:.0f}s", flush=True)
 
@@ -235,7 +242,7 @@ class Engine:
                 pad = tok.pad_token_id if tok.pad_token_id is not None else tok.eos_token_id
                 row = [tok.bos_token_id] + c + [tok.eos_token_id]
                 row = row + [pad] * (77 - len(row))
-                o = te(torch.tensor([row]), output_hidden_states=True)
+                o = te(torch.tensor([row], device=self.dev), output_hidden_states=True)
                 parts.append(o.hidden_states[-2])
                 if te is self.te2 and i == 0:
                     pooled = o.text_embeds
@@ -262,13 +269,13 @@ class Engine:
     # -------------------------------------------------------------- vae
     @torch.no_grad()
     def decode(self, lat: torch.Tensor) -> Image.Image:
-        x = self.vae.decode(lat.float() / self.vae.config.scaling_factor).sample
+        x = self.vae.decode(lat.float().to(self.dev) / self.vae.config.scaling_factor).sample.cpu()
         x = (x[0].clamp(-1, 1) + 1) / 2
         return Image.fromarray((x.permute(1, 2, 0).numpy() * 255).round().astype(np.uint8))
 
     @torch.no_grad()
     def encode_image(self, img: Image.Image) -> torch.Tensor:
-        x = torch.from_numpy(np.asarray(img.convert("RGB"))).float().permute(2, 0, 1)[None] / 127.5 - 1
+        x = (torch.from_numpy(np.asarray(img.convert("RGB"))).float().permute(2, 0, 1)[None] / 127.5 - 1).to(self.dev)
         return self.vae.encode(x).latent_dist.mean * self.vae.config.scaling_factor
 
     # -------------------------------------------------------------- sampling
@@ -288,7 +295,7 @@ class Engine:
         sched = DPMSolverMultistepScheduler.from_config(self.sched_config, use_karras_sigmas=True,
                                                         algorithm_type="dpmsolver++", solver_order=2,
                                                         final_sigmas_type="zero", timestep_spacing="trailing")
-        sched.set_timesteps(steps)
+        sched.set_timesteps(steps, device=self.dev)
         timesteps = sched.timesteps
         if init_image is not None and strength < 1.0:
             start = int(round(steps * (1 - strength)))
@@ -305,7 +312,7 @@ class Engine:
         neg, npooled, _ = self.encode(negative, n)
         ctx = torch.cat([neg, pos]).to(self.dtype)
         add_text = torch.cat([npooled, pooled]).to(self.dtype)
-        tids = torch.tensor([[height, width, 0, 0, height, width]] * 2, dtype=self.dtype)
+        tids = torch.tensor([[height, width, 0, 0, height, width]] * 2, dtype=self.dtype, device=self.dev)
         added = {"text_embeds": add_text, "time_ids": tids}
 
         st = self.region
@@ -314,7 +321,7 @@ class Engine:
             st.contexts = [self.encode(p, n)[0].to(self.dtype) for p, _ in regions]
             ms = np.stack([np.asarray(Image.fromarray((m * 255).astype(np.uint8)).resize((w8, h8), Image.BILINEAR),
                                       np.float32) / 255 for _, m in regions])
-            st.masks = torch.from_numpy(ms)
+            st.masks = torch.from_numpy(ms).to(self.dev)
             st.base_weight = base_weight
             st.active = True
         else:
@@ -327,12 +334,12 @@ class Engine:
             for kind, (im, scale) in controls.items():
                 im = im.convert("RGB").resize((width, height), Image.BILINEAR)
                 t = torch.from_numpy(np.array(im)).float().permute(2, 0, 1)[None] / 255
-                imgs.append(torch.cat([t, t]).to(self.dtype))
+                imgs.append(torch.cat([t, t]).to(self.dev, self.dtype))
                 modes.append(CONTROL_MODES[kind])
                 scales.append(float(scale))
             ctype = torch.zeros(self.controlnet.config.num_control_type)
             ctype[modes] = 1
-            cn_in = dict(controlnet_cond=imgs, control_type=ctype[None].repeat(2, 1).to(self.dtype),
+            cn_in = dict(controlnet_cond=imgs, control_type=ctype[None].repeat(2, 1).to(self.dev, self.dtype),
                          control_type_idx=modes, conditioning_scale=scales)
 
         # references: encode once; every step they are re-noised to t and run through the UNet
@@ -346,19 +353,19 @@ class Engine:
                 rw, rh = _fit_area(ref.image.size, 0.62e6)
                 rlat = self.encode_image(ref.image.convert("RGB").resize((rw, rh), Image.LANCZOS))
                 remb, rpool, _ = self.encode(ref.prompt)
-                rids = torch.tensor([[rh, rw, 0, 0, rh, rw]], dtype=self.dtype)
-                refs.append((rlat, torch.randn(rlat.shape, generator=g), remb.to(self.dtype),
+                rids = torch.tensor([[rh, rw, 0, 0, rh, rw]], dtype=self.dtype, device=self.dev)
+                refs.append((rlat, torch.randn(rlat.shape, generator=g).to(self.dev), remb.to(self.dtype),
                              {"text_embeds": rpool.to(self.dtype), "time_ids": rids}))
                 m = np.ones((height, width), np.float32) if ref.mask is None else ref.mask.astype(np.float32)
                 ms.append(np.asarray(Image.fromarray((np.clip(m, 0, 1) * 255).astype(np.uint8))
                                      .resize((w8, h8), Image.BILINEAR), np.float32) / 255)
                 rs.banks.append({})
-            rs.masks = torch.from_numpy(np.stack(ms))
+            rs.masks = torch.from_numpy(np.stack(ms)).to(self.dev)
             rs.weights = [r.weight for r in references]
             rs.style_fidelity = style_fidelity
 
         # latents
-        noise = torch.randn((1, 4, h8, w8), generator=g)
+        noise = torch.randn((1, 4, h8, w8), generator=g).to(self.dev)
         if init_image is not None:
             init = self.encode_image(init_image.resize((width, height), Image.LANCZOS))
             lat = sched.add_noise(init, noise, timesteps[:1]) if strength < 1.0 else noise * sched.init_noise_sigma
@@ -368,7 +375,7 @@ class Engine:
         keep = None
         if inpaint_mask is not None and init is not None:
             mk = Image.fromarray((np.clip(inpaint_mask, 0, 1) * 255).astype(np.uint8)).resize((w8, h8), Image.BILINEAR)
-            keep = 1 - torch.from_numpy(np.asarray(mk, np.float32) / 255)[None, None]
+            keep = (1 - torch.from_numpy(np.asarray(mk, np.float32) / 255)[None, None]).to(self.dev)
 
         t0 = time.time()
         total = len(timesteps)
